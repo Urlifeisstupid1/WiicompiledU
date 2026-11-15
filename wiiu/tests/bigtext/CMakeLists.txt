@@ -2,7 +2,10 @@
 # main() and libwut, so main's library calls cross the blob through linker
 # long-branch stubs. Tells us how much translated code the Wii U (and Cemu)
 # loader accepts from an Aroma .wuhb.
-foreach(size_mb 64 128 192)
+# Result on hardware (2026-11-15): 64/128/192 MB all fail with error 160-0220.
+# Aroma's MochaPayload sets max_codesize = 64 MiB for homebrew, so these sizes
+# (16/32/56 MB) are expected to launch.
+foreach(size_mb 16 32 56)
     set(target wiiu_bigtext_${size_mb}mb)
     add_executable(${target} src/main.c)
     target_compile_definitions(${target} PRIVATE BIGTEXT_MB=${size_mb})

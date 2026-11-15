@@ -46,7 +46,7 @@ inline uint64_t PpcLoadPairPsqFloatBitsPackedInline(uint64_t value)
     const __m128i result = _mm_or_si128(
         lanes, _mm_and_si128(nanMask, _mm_set1_epi32(0x00400000)));
     return static_cast<uint64_t>(_mm_cvtsi128_si64(result));
-#elif defined(__aarch64__)
+#else
     // Equivalent to applying PpcLoadPsqFloatBitsInline to each 32-bit lane: the
     // x86 body above only ever acts on these same two lanes (the upper 64 bits
     // _mm_cvtsi64_si128 zero-fills never survive the final truncating extract).
@@ -71,7 +71,7 @@ inline uint64_t PpcStorePairPsqFloatBitsPackedInline(uint64_t value)
         _mm_and_si128(subnormalMask, signedZero),
         _mm_andnot_si128(subnormalMask, quieted));
     return static_cast<uint64_t>(_mm_cvtsi128_si64(result));
-#elif defined(__aarch64__)
+#else
     // Equivalent to applying PpcStorePsqFloatBitsInline to each 32-bit lane;
     // same reasoning as the load-side port above.
     const uint32_t lo = PpcStorePsqFloatBitsInline(static_cast<uint32_t>(value));
@@ -123,15 +123,20 @@ inline double PpcLoadPairPsqFloatFromHostInline(const uint8_t* host)
     const __m128i raw = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(host));
     return PpcM128ToPsInline(_mm_castsi128_ps(
         PpcLoadPairPsqFloatBitsLanesInline(PpcPsqSwapPairBytesInline(raw))));
-#elif defined(__aarch64__)
+#else
     // The x86 path's full 8-byte pshufb reversal plus a same-endian load is,
     // taken together, exactly a 64-bit byteswap of a plain little-endian load:
     // it turns the on-disk [ps0 big-endian][ps1 big-endian] byte layout into a
     // native uint64 with low 32 bits = ps1, high 32 bits = ps0 (this file's
     // documented packed-double lane convention).
+    // On a big-endian host the plain load already is that native value.
     uint64_t raw = 0;
     std::memcpy(&raw, host, sizeof(raw));
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    const uint64_t swapped = raw;
+#else
     const uint64_t swapped = __builtin_bswap64(raw);
+#endif
     return PpcBitCastToDoubleInline(PpcLoadPairPsqFloatBitsPackedInline(swapped));
 #endif
 }
@@ -143,11 +148,16 @@ inline void PpcStorePairPsqFloatToHostInline(uint8_t* host, double value)
     const __m128i lanes = PpcStorePairPsqFloatBitsLanesInline(
         _mm_castps_si128(PpcPsToM128Inline(value)));
     _mm_storel_epi64(reinterpret_cast<__m128i*>(host), PpcPsqSwapPairBytesInline(lanes));
-#elif defined(__aarch64__)
+#else
     // Inverse of the load path above: bswap64 is its own inverse, so applying
     // it to the quieted packed value reproduces the on-disk big-endian bytes.
+    // A big-endian host stores the native value unchanged.
     const uint64_t quieted = PpcStorePairPsqFloatBitsPackedInline(PpcBitCastToU64Inline(value));
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    const uint64_t swapped = quieted;
+#else
     const uint64_t swapped = __builtin_bswap64(quieted);
+#endif
     std::memcpy(host, &swapped, sizeof(swapped));
 #endif
 }
@@ -383,7 +393,7 @@ inline uint16_t PpcQuantizePairPsqU8Scale61PackedInline(double value)
     // Native lane 0 is ps1 and lane 1 is ps0. Packing to the low uint16_t
     // therefore produces the guest-order numeric value (ps0 << 8) | ps1.
     return static_cast<uint16_t>(_mm_cvtsi128_si32(lanes8));
-#elif defined(__aarch64__)
+#else
     // Equivalent to two calls of the already-portable scalar quantizer above
     // (its own !(scaled > 0) rule maps NaN to 0, matching what MAXPS-with-zero
     // does on the x86 path per the comment there), packed the same way the
@@ -474,7 +484,7 @@ inline void PpcStorePairPsqQuantizedFastInline(uint32_t addr, double value, uint
 inline void PpcStoreSinglePsqFloatFastInline(uint32_t addr, double value)
 {
     const uint32_t first = PpcConvertToSingleFTZInline(
-        PpcBitCastToU64Inline(static_cast<double>(PpcGetPs0Inline(value))));
+        PpcBitCastToU64Inline(PpcWidenPs0Inline(value)));
     PpcWriteUnpairedPsqInline(addr, first);
 }
 
@@ -586,7 +596,7 @@ inline void PpcStorePairPsqQuantizedResolvedInline(uint8_t* resolvedHost, uint32
 
 inline void PpcStoreSinglePsqFloatResolvedInline(uint8_t* resolvedHost, uint32_t offset, uint32_t addr, double value)
 {
-    const uint32_t first = PpcConvertToSingleFTZInline(PpcBitCastToU64Inline(static_cast<double>(PpcGetPs0Inline(value))));
+    const uint32_t first = PpcConvertToSingleFTZInline(PpcBitCastToU64Inline(PpcWidenPs0Inline(value)));
     MemoryInline::WriteResolved32(resolvedHost, offset, addr, first);
 }
 
@@ -754,7 +764,7 @@ inline void PpcStorePairPsqQuantizedStackInline(uint32_t addr, double value, uin
 inline void PpcStoreSinglePsqFloatStackInline(uint32_t addr, double value)
 {
     const uint32_t first = PpcConvertToSingleFTZInline(
-        PpcBitCastToU64Inline(static_cast<double>(PpcGetPs0Inline(value))));
+        PpcBitCastToU64Inline(PpcWidenPs0Inline(value)));
     PpcWriteUnpairedPsqStackInline(addr, first);
 }
 

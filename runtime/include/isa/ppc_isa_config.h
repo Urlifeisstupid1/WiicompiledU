@@ -9,7 +9,9 @@
 #elif defined(__aarch64__)
 #include <arm_neon.h>
 #else
-#error "ppc_isa_config.h has no SIMD intrinsics header for this architecture"
+// Any other host (e.g. 32-bit big-endian PowerPC on the Wii U) uses the portable
+// scalar branches in ppc_isa_float.h / ppc_isa_quantized.h.
+#define MKW_ISA_SCALAR_HOST 1
 #endif
 
 inline constexpr bool MkwStateFreeAbiEnabled(uint32_t) noexcept
@@ -35,4 +37,15 @@ inline constexpr bool MkwStateFreeAbiEnabled(uint32_t) noexcept
 #define MKW_PPC_COLD __attribute__((cold))
 
 
+#if defined(__clang__)
 using MkwStateFreeResult2 = uint64_t __attribute__((ext_vector_type(2)));
+#else
+// GCC has no ext_vector_type, and its vector_size types reject the emitted
+// `return { a, b };`. A two-element aggregate accepts that brace return and the
+// `result[0]` / `result[1]` reads the translator emits.
+struct MkwStateFreeResult2 {
+    uint64_t lanes[2];
+    constexpr uint64_t operator[](int index) const noexcept { return lanes[index]; }
+    uint64_t& operator[](int index) noexcept { return lanes[index]; }
+};
+#endif

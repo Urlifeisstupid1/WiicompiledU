@@ -21,6 +21,10 @@ inline constexpr uint32_t kMkwFpControlFlushToZeroBits = (1u << 15) | (1u << 6);
 // inputs and outputs - actually a cleaner match to the "flush everything" trade above than x86's
 // two-bit combo, not an extra deviation.
 inline constexpr uint32_t kMkwFpControlFlushToZeroBits = (1u << 24); // FZ
+#elif defined(__powerpc__) || defined(__PPC__)
+// Gekko/Broadway/Espresso: the host has the real FPSCR[NI] bit (IBM bit 29, mask 0x4),
+// so guest NI semantics are reproduced exactly rather than approximated.
+inline constexpr uint32_t kMkwFpControlFlushToZeroBits = 0x4u; // FPSCR[NI]
 #else
 #error "ppc_isa_fpenv.h has no host FP control register mapping for this architecture"
 #endif
@@ -44,6 +48,12 @@ inline uint32_t MkwGetHostFpControl() noexcept
     uint64_t fpcr = 0;
     __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
     return static_cast<uint32_t>(fpcr);
+#elif defined(__powerpc__) || defined(__PPC__)
+    double fpscrImage = 0.0;
+    __asm__ __volatile__("mffs %0" : "=f"(fpscrImage));
+    uint64_t bits = 0;
+    __builtin_memcpy(&bits, &fpscrImage, sizeof(bits));
+    return static_cast<uint32_t>(bits);
 #endif
 }
 
@@ -58,6 +68,11 @@ inline void MkwSetHostFpControl(uint32_t value) noexcept
     __asm__ __volatile__("mrs %0, fpcr" : "=r"(fpcr));
     fpcr = (fpcr & ~static_cast<uint64_t>(0xFFFFFFFFu)) | value;
     __asm__ __volatile__("msr fpcr, %0" :: "r"(fpcr));
+#elif defined(__powerpc__) || defined(__PPC__)
+    const uint64_t bits = static_cast<uint64_t>(value);
+    double fpscrImage = 0.0;
+    __builtin_memcpy(&fpscrImage, &bits, sizeof(fpscrImage));
+    __asm__ __volatile__("mtfsf 0xFF, %0" :: "f"(fpscrImage));
 #endif
 }
 

@@ -31,6 +31,12 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0080'0000'0000ull;
 // probing to sit far below where the PIE image, heap, shared libraries and
 // stack actually land (all clustered above ~340 GiB on a 39-bit/512 GiB system).
 inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0010'0000'0000ull;
+#elif defined(__WIIU__)
+// 32-bit host: a 4 GiB guest reservation cannot exist. Every Flat* access takes
+// the checked page-table path instead (one bias-table load per access; see
+// memory_access.h), and the base below is never dereferenced.
+#define MKW_GUEST_FLAT_DISABLED 1
+inline constexpr uintptr_t kFixedFlatGuestBase = 0;
 #else
 #error "guest_abi/flat_memory.h has no fixed flat guest base chosen for this architecture"
 #endif
@@ -49,7 +55,9 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0010'0000'0000ull;
 #define MKW_GUEST_FLAT_FIXED_PAGE_SIZE 1
 #endif
 
-#if defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
+#if defined(MKW_GUEST_FLAT_DISABLED)
+inline constexpr bool RequiresCheckedAccess() noexcept { return true; }
+#elif defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
 inline constexpr bool RequiresCheckedAccess() noexcept { return false; }
 #else
 extern bool g_requiresCheckedAccess;

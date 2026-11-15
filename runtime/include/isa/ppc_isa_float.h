@@ -84,6 +84,14 @@ using PpcPairVec = __m128;
 // Only 2 lanes are ever meaningful (a PPC paired-single register), so a 2-lane float32x2_t
 // (one 64-bit D register) is a more natural fit than mirroring x86's 128-bit register usage.
 using PpcPairVec = float32x2_t;
+#else
+// Portable scalar host (no SIMD; e.g. 32-bit big-endian PowerPC on the Wii U).
+// Lanes hold raw IEEE single bit patterns so lane moves never pass through an FP
+// register: lane[0] mirrors SSE/NEON lane 0 (ps1, the packed double's low word)
+// and lane[1] mirrors lane 1 (ps0, the high word).
+struct PpcPairVec {
+    uint32_t lane[2];
+};
 #endif
 
 // Must stay inside the vector register domain. Bitcasting through a 64-bit GPR added a movq
@@ -95,6 +103,9 @@ inline PpcPairVec PpcPsToM128Inline(double value)
     return _mm_castpd_ps(_mm_set_sd(value));
 #elif defined(__aarch64__)
     return vreinterpret_f32_f64(vdup_n_f64(value));
+#else
+    const uint64_t bits = PpcBitCastToU64Inline(value);
+    return PpcPairVec{{static_cast<uint32_t>(bits), static_cast<uint32_t>(bits >> 32)}};
 #endif
 }
 
@@ -104,6 +115,9 @@ inline double PpcM128ToPsInline(PpcPairVec value)
     return _mm_cvtsd_f64(_mm_castps_pd(value));
 #elif defined(__aarch64__)
     return vget_lane_f64(vreinterpret_f64_f32(value), 0);
+#else
+    return PpcBitCastToDoubleInline(
+        (static_cast<uint64_t>(value.lane[1]) << 32) | static_cast<uint64_t>(value.lane[0]));
 #endif
 }
 
@@ -115,6 +129,9 @@ inline PpcPairVec PpcBroadcastPs0Inline(double value)
 #elif defined(__aarch64__)
     // ps0 lives in lane 1 (see the lane-accessor comment below).
     return vdup_lane_f32(PpcPsToM128Inline(value), 1);
+#else
+    const uint32_t ps0 = static_cast<uint32_t>(PpcBitCastToU64Inline(value) >> 32);
+    return PpcPairVec{{ps0, ps0}};
 #endif
 }
 
@@ -126,6 +143,9 @@ inline PpcPairVec PpcBroadcastPs1Inline(double value)
 #elif defined(__aarch64__)
     // ps1 is already lane 0.
     return vdup_lane_f32(PpcPsToM128Inline(value), 0);
+#else
+    const uint32_t ps1 = static_cast<uint32_t>(PpcBitCastToU64Inline(value));
+    return PpcPairVec{{ps1, ps1}};
 #endif
 }
 
@@ -142,6 +162,13 @@ inline PpcPairVec PpcNegateNonNanLanesInline(PpcPairVec value)
     // NEON has no direct "ordered compare"; a value compares equal to itself iff it's not NaN.
     const uint32x2_t ordered = vceq_f32(value, value);
     return vbsl_f32(ordered, negated, value);
+#else
+    PpcPairVec result = value;
+    for (uint32_t& lane : result.lane) {
+        if ((lane & 0x7FFFFFFFu) <= 0x7F800000u)
+            lane ^= 0x80000000u;
+    }
+    return result;
 #endif
 }
 
@@ -157,6 +184,8 @@ inline float PpcGetPs0Inline(double value)
     return _mm_cvtss_f32(PpcBroadcastPs0Inline(value));
 #elif defined(__aarch64__)
     return vget_lane_f32(PpcBroadcastPs0Inline(value), 0);
+#else
+    return PpcBitCastToFloatInline(static_cast<uint32_t>(PpcBitCastToU64Inline(value) >> 32));
 #endif
 }
 
@@ -167,6 +196,23 @@ inline float PpcGetPs1Inline(double value)
     return _mm_cvtss_f32(PpcPsToM128Inline(value));
 #elif defined(__aarch64__)
     return vget_lane_f32(PpcPsToM128Inline(value), 0);
+#else
+    return PpcBitCastToFloatInline(static_cast<uint32_t>(PpcBitCastToU64Inline(value)));
+#endif
+}
+
+// ps0 widened to double exactly as x86's cvtss2sd does it: a signalling NaN comes out
+// quieted. A PowerPC host (like real Gekko hardware) keeps it signalling, so the scalar
+// host quiets it explicitly to stay bit-identical with the x86 reference build.
+inline double PpcWidenPs0Inline(double value)
+{
+#if defined(MKW_ISA_SCALAR_HOST)
+    uint32_t bits = static_cast<uint32_t>(PpcBitCastToU64Inline(value) >> 32);
+    if ((bits & 0x7FFFFFFFu) > 0x7F800000u)
+        bits |= 0x00400000u;
+    return static_cast<double>(PpcBitCastToFloatInline(bits));
+#else
+    return static_cast<double>(PpcGetPs0Inline(value));
 #endif
 }
 
@@ -180,6 +226,10 @@ inline double PpcPackPairedInline(float ps0, float ps1)
     // Lane 0 = ps1, lane 1 = ps0, matching the union layout bit for bit.
     const float32x2_t lane0 = vdup_n_f32(ps1);
     return PpcM128ToPsInline(vset_lane_f32(ps0, lane0, 1));
+#else
+    return PpcBitCastToDoubleInline(
+        (static_cast<uint64_t>(PpcBitCastToU32Inline(ps0)) << 32) |
+        static_cast<uint64_t>(PpcBitCastToU32Inline(ps1)));
 #endif
 }
 
@@ -213,6 +263,12 @@ inline float PpcForceSingleValueSlowInline(double value)
     const uint64x1_t signOnly = vand_u64(vreinterpret_u64_f64(v), signMask);
     const uint64x1_t kept = vbsl_u64(flush, signOnly, vreinterpret_u64_f64(v));
     return static_cast<float>(vget_lane_f64(vreinterpret_f64_u64(kept), 0));
+#else
+    constexpr uint64_t kSignMask = 0x8000000000000000ULL;
+    const uint64_t bits = PpcBitCastToU64Inline(value);
+    const double magnitude = PpcBitCastToDoubleInline(bits & ~kSignMask);
+    const uint64_t kept = magnitude < g_mkwNiFlushThreshold ? (bits & kSignMask) : bits;
+    return static_cast<float>(PpcBitCastToDoubleInline(kept));
 #endif
 }
 
@@ -581,6 +637,67 @@ inline PpcPairVec PpcResolveNanLanes3Inline(
     const uint32x2_t resultNan = vmvn_u32(vceq_f32(result, result));
     return vbsl_f32(resultNan, replacement, result);
 }
+#elif !defined(__x86_64__)
+// Scalar host: the same x86-matching NaN rules as the AArch64 block above. A NaN result lane
+// becomes the first NaN operand quieted (sign and payload kept), or 0xFFC00000 when the
+// operation was invalid with no NaN input.
+inline bool PpcScalarLaneIsNanInline(uint32_t bits)
+{
+    return (bits & 0x7FFFFFFFu) > 0x7F800000u;
+}
+
+inline uint32_t PpcScalarResolveNanLaneInline(uint32_t result, uint32_t op1, uint32_t op2)
+{
+    if (!PpcScalarLaneIsNanInline(result)) [[likely]]
+        return result;
+    if (PpcScalarLaneIsNanInline(op1))
+        return op1 | 0x00400000u;
+    if (PpcScalarLaneIsNanInline(op2))
+        return op2 | 0x00400000u;
+    return 0xFFC00000u;
+}
+
+inline uint32_t PpcScalarResolveNanLane3Inline(uint32_t result, uint32_t op1, uint32_t op2, uint32_t op3)
+{
+    if (!PpcScalarLaneIsNanInline(result)) [[likely]]
+        return result;
+    if (PpcScalarLaneIsNanInline(op1))
+        return op1 | 0x00400000u;
+    if (PpcScalarLaneIsNanInline(op2))
+        return op2 | 0x00400000u;
+    if (PpcScalarLaneIsNanInline(op3))
+        return op3 | 0x00400000u;
+    return 0xFFC00000u;
+}
+
+template <typename Op>
+inline PpcPairVec PpcScalarPairBinaryInline(PpcPairVec lhs, PpcPairVec rhs, Op op)
+{
+    PpcPairVec result{};
+    for (int i = 0; i < 2; ++i) {
+        const float value = op(PpcBitCastToFloatInline(lhs.lane[i]), PpcBitCastToFloatInline(rhs.lane[i]));
+        result.lane[i] = PpcScalarResolveNanLaneInline(PpcBitCastToU32Inline(value), lhs.lane[i], rhs.lane[i]);
+    }
+    return result;
+}
+
+// One rounding point per lane. The double FMA plus tie repair in
+// PpcAccurateSingleMaddIntermediateInline is exact for float32 inputs (the 25-bit
+// rounding of C is the identity on a float32), so the final cast is the only rounding
+// and the result does not depend on the host's own single-precision fmadds behaviour.
+template <bool Subtract>
+inline PpcPairVec PpcScalarPairFusedInline(PpcPairVec a, PpcPairVec c, PpcPairVec b)
+{
+    PpcPairVec result{};
+    for (int i = 0; i < 2; ++i) {
+        const float value = static_cast<float>(PpcAccurateSingleMaddIntermediateInline<Subtract>(
+            static_cast<double>(PpcBitCastToFloatInline(a.lane[i])),
+            static_cast<double>(PpcBitCastToFloatInline(c.lane[i])),
+            static_cast<double>(PpcBitCastToFloatInline(b.lane[i]))));
+        result.lane[i] = PpcScalarResolveNanLane3Inline(PpcBitCastToU32Inline(value), a.lane[i], c.lane[i], b.lane[i]);
+    }
+    return result;
+}
 #endif // defined(__aarch64__)
 
 inline PpcPairVec PpcMulPairInline(PpcPairVec lhs, PpcPairVec rhs)
@@ -592,6 +709,8 @@ inline PpcPairVec PpcMulPairInline(PpcPairVec lhs, PpcPairVec rhs)
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
         return PpcResolveNanLanesInline(result, lhs, rhs);
     return result;
+#else
+    return PpcScalarPairBinaryInline(lhs, rhs, [](float x, float y) { return x * y; });
 #endif
 }
 
@@ -636,6 +755,8 @@ inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multipl
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
         return PpcResolveNanLanes3Inline(result, multiplicand, multiplier, addend);
     return result;
+#else
+    return PpcScalarPairFusedInline<false>(multiplicand, multiplier, addend);
 #endif
 }
 
@@ -657,6 +778,8 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
         return PpcResolveNanLanes3Inline(result, multiplicand, multiplier, subtractor);
     return result;
+#else
+    return PpcScalarPairFusedInline<true>(multiplicand, multiplier, subtractor);
 #endif
 }
 
@@ -743,7 +866,7 @@ inline double PPC_PsFromScalarNoNiInline(double value)
 
 inline double PPC_PsToScalarInline(double value)
 {
-    return static_cast<double>(PpcGetPs0Inline(value));
+    return PpcWidenPs0Inline(value);
 }
 
 // ps_merge* are pure lane selections (result.ps0 from frA, result.ps1 from frB). On x86 two
@@ -760,6 +883,10 @@ inline double PPC_PsMerge00Inline(double aValue, double bValue)
     return PpcM128ToPsInline(_mm_shuffle_ps(gathered, gathered, _MM_SHUFFLE(0, 0, 2, 0)));
 #elif defined(__aarch64__)
     return PpcPackPairedInline(PpcGetPs0Inline(aValue), PpcGetPs0Inline(bValue));
+#else
+    const uint64_t a = PpcBitCastToU64Inline(aValue);
+    const uint64_t b = PpcBitCastToU64Inline(bValue);
+    return PpcBitCastToDoubleInline((a & 0xFFFFFFFF00000000ULL) | ((b >> 32) & 0x00000000FFFFFFFFULL));
 #endif
 }
 
@@ -772,6 +899,10 @@ inline double PPC_PsMerge01Inline(double aValue, double bValue)
     return PpcM128ToPsInline(_mm_shuffle_ps(gathered, gathered, _MM_SHUFFLE(0, 0, 2, 0)));
 #elif defined(__aarch64__)
     return PpcPackPairedInline(PpcGetPs0Inline(aValue), PpcGetPs1Inline(bValue));
+#else
+    const uint64_t a = PpcBitCastToU64Inline(aValue);
+    const uint64_t b = PpcBitCastToU64Inline(bValue);
+    return PpcBitCastToDoubleInline((a & 0xFFFFFFFF00000000ULL) | (b & 0x00000000FFFFFFFFULL));
 #endif
 }
 
@@ -784,6 +915,10 @@ inline double PPC_PsMerge10Inline(double aValue, double bValue)
     return PpcM128ToPsInline(_mm_shuffle_ps(gathered, gathered, _MM_SHUFFLE(0, 0, 2, 0)));
 #elif defined(__aarch64__)
     return PpcPackPairedInline(PpcGetPs1Inline(aValue), PpcGetPs0Inline(bValue));
+#else
+    const uint64_t a = PpcBitCastToU64Inline(aValue);
+    const uint64_t b = PpcBitCastToU64Inline(bValue);
+    return PpcBitCastToDoubleInline(((a << 32) & 0xFFFFFFFF00000000ULL) | ((b >> 32) & 0x00000000FFFFFFFFULL));
 #endif
 }
 
@@ -796,6 +931,10 @@ inline double PPC_PsMerge11Inline(double aValue, double bValue)
         _mm_unpacklo_ps(PpcPsToM128Inline(bValue), PpcPsToM128Inline(aValue)));
 #elif defined(__aarch64__)
     return PpcPackPairedInline(PpcGetPs1Inline(aValue), PpcGetPs1Inline(bValue));
+#else
+    const uint64_t a = PpcBitCastToU64Inline(aValue);
+    const uint64_t b = PpcBitCastToU64Inline(bValue);
+    return PpcBitCastToDoubleInline(((a << 32) & 0xFFFFFFFF00000000ULL) | (b & 0x00000000FFFFFFFFULL));
 #endif
 }
 
@@ -808,6 +947,8 @@ inline PpcPairVec PpcAddPairInline(PpcPairVec lhs, PpcPairVec rhs)
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
         return PpcResolveNanLanesInline(result, lhs, rhs);
     return result;
+#else
+    return PpcScalarPairBinaryInline(lhs, rhs, [](float x, float y) { return x + y; });
 #endif
 }
 
@@ -820,6 +961,8 @@ inline PpcPairVec PpcSubPairInline(PpcPairVec lhs, PpcPairVec rhs)
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
         return PpcResolveNanLanesInline(result, lhs, rhs);
     return result;
+#else
+    return PpcScalarPairBinaryInline(lhs, rhs, [](float x, float y) { return x - y; });
 #endif
 }
 
@@ -832,6 +975,8 @@ inline PpcPairVec PpcDivPairInline(PpcPairVec lhs, PpcPairVec rhs)
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
         return PpcResolveNanLanesInline(result, lhs, rhs);
     return result;
+#else
+    return PpcScalarPairBinaryInline(lhs, rhs, [](float x, float y) { return x / y; });
 #endif
 }
 

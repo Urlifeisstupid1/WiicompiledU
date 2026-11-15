@@ -11,7 +11,13 @@
 
 inline uint32_t PpcRotl32Inline(uint32_t value, uint32_t shift)
 {
+#if defined(__clang__)
     return __builtin_rotateleft32(value, shift);
+#else
+    // GCC has no __builtin_rotateleft32; it recognises this idiom (rlwnm on PowerPC).
+    const uint32_t amount = static_cast<uint32_t>(shift) & 31u;
+    return (value << amount) | (value >> ((32u - amount) & 31u));
+#endif
 }
 
 extern "C" uint32_t OSSystemCall();

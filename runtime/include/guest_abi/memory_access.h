@@ -260,6 +260,10 @@ inline uint64_t ByteSwap64(uint64_t value) {
 
 template <typename T>
 inline T MaybeByteSwap(T value) {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    // Big-endian host (Wii U): guest byte order is native, nothing to swap.
+    return value;
+#else
     if constexpr (sizeof(T) == 1) {
         return value;
     } else if constexpr (sizeof(T) == 2) {
@@ -271,6 +275,7 @@ inline T MaybeByteSwap(T value) {
     } else {
         return value;
     }
+#endif
 }
 
 template <typename T>
@@ -537,6 +542,25 @@ MKW_MEMORY_FORCE_INLINE void WriteResolvedFloat64(uint8_t* r, uint32_t o, uint32
 // FlatWriteRam* remains direct because the translator emits it only for
 // addresses it has proven are ordinary RAM.
 
+#if defined(MKW_GUEST_FLAT_DISABLED)
+// No flat reservation on this host: the raw flat load/store (used directly by the
+// FlatWriteRam* family) goes through the checked page-table path like everything else.
+template <typename T>
+MKW_MEMORY_FORCE_INLINE T FlatLoad(uint32_t address) {
+    if constexpr (sizeof(T) == 1) return static_cast<T>(Memory::Read8(address));
+    else if constexpr (sizeof(T) == 2) return static_cast<T>(Memory::Read16(address));
+    else if constexpr (sizeof(T) == 4) return static_cast<T>(Memory::Read32(address));
+    else return static_cast<T>(Memory::Read64(address));
+}
+
+template <typename T>
+MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value) {
+    if constexpr (sizeof(T) == 1) Memory::Write8(address, static_cast<uint8_t>(value));
+    else if constexpr (sizeof(T) == 2) Memory::Write16(address, static_cast<uint16_t>(value));
+    else if constexpr (sizeof(T) == 4) Memory::Write32(address, static_cast<uint32_t>(value));
+    else Memory::Write64(address, static_cast<uint64_t>(value));
+}
+#else
 template <typename T>
 MKW_MEMORY_FORCE_INLINE T FlatLoad(uint32_t address) {
     T value{};
@@ -549,6 +573,7 @@ MKW_MEMORY_FORCE_INLINE void FlatStore(uint32_t address, T value) {
     const T swapped = MaybeByteSwap(value);
     std::memcpy(MKW_FLAT_GUEST_BASE + address, &swapped, sizeof(T));
 }
+#endif
 
 MKW_MEMORY_FORCE_INLINE uint8_t FlatRead8(uint32_t address) {
     if (GuestFlat::RequiresCheckedAccess()) return Memory::Read8(address);
