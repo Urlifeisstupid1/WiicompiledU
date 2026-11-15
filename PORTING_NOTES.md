@@ -33,8 +33,9 @@ cmake --build wiiu/build
 | `tests/bigtext` 64/128/192 MB | Loader code-size limit | `far_fn(4) = 13` | **All three crash, error 160-0220** |
 | `tests/bigtext` 16 MB | Loader limit | `far_fn(4) = 13` | **OK** |
 | `tests/bigtext` 32 / 56 MB | Loader limit | `far_fn(4) = 13` | **Stuck on the loading screen** |
-| `tests/bigtext` 20 / 24 / 28 MB, zero-filled (new) | Find the threshold | `far_fn(4) = 13` | Not tested yet |
-| `tests/bigtext` 32 MB, random-filled (new) | Is the hang caused by the compression ratio? (32 MB of zeros compresses to 64 KB) | `far_fn(4) = 13` | Not tested yet |
+| `tests/bigtext` 20 / 24 / 28 MB, zero-filled | Find the threshold | `far_fn(4) = 13` | **OK** |
+| `tests/bigtext` 32 MB, random-filled | Is the hang caused by the compression ratio? | `far_fn(4) = 13` | **Stuck**: it is the size, not compression |
+| `tests/codegen/wiiu_codegen_probe` (new) | Is Aroma's 32 MiB codegen (JIT) area usable as overflow space for code? | Area address/size, full-area sled returns 7, codegen→RPX call returns 141, report on SD (`wiicompiled_codegen.txt`) | Not tested yet |
 
 ## 3. Audit findings — blockers found by building
 
@@ -43,7 +44,7 @@ cmake --build wiiu/build
 | T1 | **`thread_local` cannot be used.** elf2rpl rejects R_PPC_TPREL16_LO/HA (relocs 70/72) under every TLS model. The runtime uses `thread_local` in about **53 declarations** across headers and 18 source files, including hot paths (`g_currentCpuContext`, the FP mirror `g_mkwHostNiActive`, the indirect-dispatch memo). | stdtest link | D2: `MKW_THREAD_LOCAL` with real per-thread storage via `OSGetThreadSpecific` (some state is used from the AX mixer and GX worker threads, so plain globals are not safe everywhere). Hot paths can be optimised afterwards. | M |
 | T2 | **No 64-bit atomics.** `__atomic_*_8` is undefined and devkitPPC ships no libatomic. `std::atomic<uint64_t/int64_t/double>` appears in 3 files. | stdtest link | A small libatomic shim using `OSUninterruptibleSpinLock`. | S |
 | T3 | **The code-size budget is tight**, but -Os fits (§7). | Probe translation, measured on PPC | Build translated code with `-Os`; spend the leftover budget on `-O2` for hot functions. | M |
-| T4 | **RPX code is limited to 64 MiB under Aroma.** Aroma's MochaPayload patches the homebrew title's cos.xml with `max_codesize = 0x04000000` (64 MiB) and `codegen_size = 0x02000000` (a 32 MiB JIT area) (`source/ios_mcp/source/mcp_loadfile.c` in `wiiu-env/MochaPayload`). That matches the 64 MB+ crashes. GNU ld's long-branch stubs work, so branch range is not the problem. | bigtext on hardware + Aroma source | Stay under about 60 MiB of RPX code. The 32 MiB codegen area is a possible overflow for cold code later. **But 32 MB and 56 MB already hang on the loading screen while 16 MB works**, so a second, lower limit (or a loader problem with the zero-filled test) is still unexplained; being narrowed down with the 20/24/28 MB and random-filled 32 MB builds. | — |
+| T4 | **RPX code is limited to 64 MiB under Aroma.** Aroma's MochaPayload patches the homebrew title's cos.xml with `max_codesize = 0x04000000` (64 MiB) and `codegen_size = 0x02000000` (a 32 MiB JIT area) (`source/ios_mcp/source/mcp_loadfile.c` in `wiiu-env/MochaPayload`). That matches the 64 MB+ crashes. GNU ld's long-branch stubs work, so branch range is not the problem. | bigtext on hardware + Aroma source | Stay under about 60 MiB of RPX code. The 32 MiB codegen area is a possible overflow for cold code later. **Measured: RPX text up to 28 MB launches; 32 MB hangs (also with incompressible data); 64 MB+ gives 160-0220.** Theory: the 32 MiB codegen area is carved out of the 64 MiB code area, leaving about 32 MB for the RPX including libraries. Being checked with `tests/codegen`. If confirmed, the usable executable memory is about 28 MB of RPX plus 32 MiB of codegen. | — |
 
 ## 4. Host dependency audit (runtime/ + aurora)
 
