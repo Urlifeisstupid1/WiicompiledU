@@ -36,7 +36,8 @@ cmake --build wiiu/build
 | `tests/bigtext` 20 / 24 / 28 MB, zero-filled | Find the threshold | `far_fn(4) = 13` | **OK** |
 | `tests/bigtext` 32 MB, random-filled | Is the hang caused by the compression ratio? | `far_fn(4) = 13` | **Stuck**: it is the size, not compression |
 | `tests/codegen/wiiu_codegen_probe` round 1 | Is Aroma's 32 MiB codegen (JIT) area usable as overflow space for code? | Area info, sled returns 7, codegen→RPX call returns 141 | **Area at `0x01800000`, 32 MiB, core 1. RPX code loads at `0x0C000000`. `OSCodegenCopy` refused (even 48 bytes).** |
-| `tests/codegen/wiiu_codegen_probe` round 2 | Tries `OSCodegenCopy` at other sizes/offsets and the `OSSwitchSecCodeGenMode` RW→memcpy→RX route; logs each step to SD as it goes | `RESULT: codegen area usable…` | Not tested yet |
+| `tests/codegen/wiiu_codegen_probe` round 2 | Tries `OSCodegenCopy` at other sizes/offsets and the `OSSwitchSecCodeGenMode` RW→memcpy→RX route | `RESULT: codegen area usable…` | **`OSCodegenCopy` refused at every size; `OSSwitchSecCodeGenMode` RW → memcpy → RX works. Codegen→RPX call returned 141; the full 32 MiB nop sled ran (fill 313 ms, run 145 ms).** |
+| `tests/overlay/wiiu_overlay_test` (new) | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | Not tested yet |
 
 ## 3. Audit findings — blockers found by building
 
@@ -45,7 +46,7 @@ cmake --build wiiu/build
 | T1 | **`thread_local` cannot be used.** elf2rpl rejects R_PPC_TPREL16_LO/HA (relocs 70/72) under every TLS model. The runtime uses `thread_local` in about **53 declarations** across headers and 18 source files, including hot paths (`g_currentCpuContext`, the FP mirror `g_mkwHostNiActive`, the indirect-dispatch memo). | stdtest link | D2: `MKW_THREAD_LOCAL` with real per-thread storage via `OSGetThreadSpecific` (some state is used from the AX mixer and GX worker threads, so plain globals are not safe everywhere). Hot paths can be optimised afterwards. | M |
 | T2 | **No 64-bit atomics.** `__atomic_*_8` is undefined and devkitPPC ships no libatomic. `std::atomic<uint64_t/int64_t/double>` appears in 3 files. | stdtest link | A small libatomic shim using `OSUninterruptibleSpinLock`. | S |
 | T3 | **The code-size budget is tight**, but -Os fits (§7). | Probe translation, measured on PPC | Build translated code with `-Os`; spend the leftover budget on `-O2` for hot functions. | M |
-| T4 | **RPX code is limited to 64 MiB under Aroma.** Aroma's MochaPayload patches the homebrew title's cos.xml with `max_codesize = 0x04000000` (64 MiB) and `codegen_size = 0x02000000` (a 32 MiB JIT area) (`source/ios_mcp/source/mcp_loadfile.c` in `wiiu-env/MochaPayload`). That matches the 64 MB+ crashes. GNU ld's long-branch stubs work, so branch range is not the problem. | bigtext on hardware + Aroma source | Stay under about 60 MiB of RPX code. The 32 MiB codegen area is a possible overflow for cold code later. **Measured: RPX text up to 28 MB launches; 32 MB hangs (also with incompressible data); 64 MB+ gives 160-0220.** Theory: the 32 MiB codegen area is carved out of the 64 MiB code area, leaving about 32 MB for the RPX including libraries. Being checked with `tests/codegen`. If confirmed, the usable executable memory is about 28 MB of RPX plus 32 MiB of codegen. | — |
+| T4 | **RPX code is limited to 64 MiB under Aroma.** Aroma's MochaPayload patches the homebrew title's cos.xml with `max_codesize = 0x04000000` (64 MiB) and `codegen_size = 0x02000000` (a 32 MiB JIT area) (`source/ios_mcp/source/mcp_loadfile.c` in `wiiu-env/MochaPayload`). That matches the 64 MB+ crashes. GNU ld's long-branch stubs work, so branch range is not the problem. | bigtext on hardware + Aroma source | Stay under about 60 MiB of RPX code. The 32 MiB codegen area is a possible overflow for cold code later. **Measured: RPX text up to 28 MB launches; 32 MB hangs (also with incompressible data); 64 MB+ gives 160-0220.** Theory: the 32 MiB codegen area is carved out of the 64 MiB code area, leaving about 32 MB for the RPX including libraries. **Confirmed usable** (`tests/codegen` round 2): the codegen area is at `0x01800000`, 32 MiB, switchable on core 1. RPX code itself loads at `0x0C000000`. Usable executable memory is therefore about **28 MB of RPX + 32 MiB of codegen ≈ 60 MB**, and the split design D8 uses it. | — |
 
 ## 4. Host dependency audit (runtime/ + aurora)
 
@@ -167,7 +168,20 @@ qemu-ppc -cpu 750 /tmp/pdiff_ppc   # compare with the same file built by clang++
 ```
 Limits: qemu does not model FPSCR[NI] flushing like Espresso, and nothing here has run on Espresso itself.
 
-### 6.3 Remaining for Phase 2
+### 6.3 Cold overlay (D8) — how it works
+- **Build** (`wiiu/cmake/WiiUCold.cmake`): static libraries named `libwiicold_*.a` are cold. A copy of `wut.ld` gets a `coldmem` region at `0x01800000` and the `.wiicold` section (`wiiu/cmake/wiicold.ld`) ahead of `.text`, so it claims the cold libraries' code and their `.eh_frame`. A one-line specs file makes the link use that script.
+- **Split** (`wiiu/tools/wiiu_cold_split.py`, Python 3, run after linking and before elf2rpl):
+  - Writes `.wiicold` to `cold.bin`, with every relocation from cold code into RPX sections.
+  - Drops relocations that point into the cold region, since cold code never moves.
+  - **Fails the build** on any PC-relative reference crossing the two regions. Cold code and its callers are compiled with `-mlongcall`.
+  - Removes the section with objcopy.
+- **Load** (`wiiu/common/wiicold_loader.c`, `WiiColdLoad`):
+  - Rebases the recorded relocations against anchor symbols in `.text/.rodata/.data/.bss`, because the Cafe loader moves the RPX.
+  - Switches the area RW → memcpy → RX on the codegen core.
+  - Registers the cold `.eh_frame` with `__register_frame_info`, so C++ exceptions can unwind through cold frames.
+- **Costs:** `-mlongcall` makes every call 4 instructions instead of 1. Calls between regions are absolute. The PC needs Python 3 for the build (devkitPro's MSYS2 shell: `pacman -S python`).
+
+### 6.4 Remaining for Phase 2
 1. T1 `thread_local` → `MKW_THREAD_LOCAL` (OS thread-specific storage).
 2. T2 libatomic shim.
 3. `HostContext` Wii U backend on libco `ppc.c`.
@@ -199,7 +213,8 @@ The user said "do what you think will work best" (2026-11-15), so the recommenda
 | D4 | Where the port lives | Fork `Urlifeisstupid1/WiicompiledU`, branch `wiiu-port`. |
 | D5 | GX2 shader strategy | Decide at Phase 3; leaning toward a precompiled TEV uber-shader. |
 | D6 | Guest MEM2 size | **64 MB** (retail), unless a mod turns out to need upstream's 128 MB. |
-| D7 | Code-size strategy (new) | **`-Os` for translated code**, hot functions at `-O2` within the 64 MiB budget. |
+| D7 | Code-size strategy | **`-Os` for translated code**, hot functions at `-O2` within the budget. |
+| D8 | Using more than ~28 MB of code (new) | **Split build:** the RPX holds the runtime and hot translated code (≤ ~28 MB); the remaining translated code is linked at the codegen address, split out into `cold.bin` in the .wuhb content folder, and copied into the codegen area at startup. See §6.3. |
 
 ## 9. Open problems / risks
 1. **Performance:** Espresso runs at 1.24 GHz with no SIMD beyond paired singles, while upstream asks for a 3.5 GHz x86 CPU. `-Os` code and a checked memory path every access will cost speed. Expect profiling work, selective `-O2`, and possibly native paired-single asm.
