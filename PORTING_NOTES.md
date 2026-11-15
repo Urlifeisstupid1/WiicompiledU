@@ -31,7 +31,10 @@ cmake --build wiiu/build
 | `hello/wiiu_hello` | WHBProc + OSScreen console | Text, "tick N" every second, HOME exits | **OK** |
 | `tests/stdtest/wiiu_stdtest` | std::thread, mutex/condvar, exceptions, std::filesystem on SD, chrono | `exc ok`, `tls main=5 a64=5 sd=1 ns=…` | **OK** |
 | `tests/bigtext` 64/128/192 MB | Loader code-size limit | `far_fn(4) = 13` | **All three crash, error 160-0220** |
-| `tests/bigtext` 16/32/56 MB (new) | Confirms the limit is 64 MiB | `far_fn(4) = 13` | Not tested yet |
+| `tests/bigtext` 16 MB | Loader limit | `far_fn(4) = 13` | **OK** |
+| `tests/bigtext` 32 / 56 MB | Loader limit | `far_fn(4) = 13` | **Stuck on the loading screen** |
+| `tests/bigtext` 20 / 24 / 28 MB, zero-filled (new) | Find the threshold | `far_fn(4) = 13` | Not tested yet |
+| `tests/bigtext` 32 MB, random-filled (new) | Is the hang caused by the compression ratio? (32 MB of zeros compresses to 64 KB) | `far_fn(4) = 13` | Not tested yet |
 
 ## 3. Audit findings — blockers found by building
 
@@ -40,7 +43,7 @@ cmake --build wiiu/build
 | T1 | **`thread_local` cannot be used.** elf2rpl rejects R_PPC_TPREL16_LO/HA (relocs 70/72) under every TLS model. The runtime uses `thread_local` in about **53 declarations** across headers and 18 source files, including hot paths (`g_currentCpuContext`, the FP mirror `g_mkwHostNiActive`, the indirect-dispatch memo). | stdtest link | D2: `MKW_THREAD_LOCAL` with real per-thread storage via `OSGetThreadSpecific` (some state is used from the AX mixer and GX worker threads, so plain globals are not safe everywhere). Hot paths can be optimised afterwards. | M |
 | T2 | **No 64-bit atomics.** `__atomic_*_8` is undefined and devkitPPC ships no libatomic. `std::atomic<uint64_t/int64_t/double>` appears in 3 files. | stdtest link | A small libatomic shim using `OSUninterruptibleSpinLock`. | S |
 | T3 | **The code-size budget is tight**, but -Os fits (§7). | Probe translation, measured on PPC | Build translated code with `-Os`; spend the leftover budget on `-O2` for hot functions. | M |
-| T4 | **RPX code is limited to 64 MiB under Aroma.** Aroma's MochaPayload patches the homebrew title's cos.xml with `max_codesize = 0x04000000` (64 MiB) and `codegen_size = 0x02000000` (a 32 MiB JIT area) (`source/ios_mcp/source/mcp_loadfile.c` in `wiiu-env/MochaPayload`). That matches the 64 MB+ crashes. GNU ld's long-branch stubs work, so branch range is not the problem. | bigtext on hardware + Aroma source | Stay under about 60 MiB of RPX code. The 32 MiB codegen area is a possible overflow for cold code later. | — |
+| T4 | **RPX code is limited to 64 MiB under Aroma.** Aroma's MochaPayload patches the homebrew title's cos.xml with `max_codesize = 0x04000000` (64 MiB) and `codegen_size = 0x02000000` (a 32 MiB JIT area) (`source/ios_mcp/source/mcp_loadfile.c` in `wiiu-env/MochaPayload`). That matches the 64 MB+ crashes. GNU ld's long-branch stubs work, so branch range is not the problem. | bigtext on hardware + Aroma source | Stay under about 60 MiB of RPX code. The 32 MiB codegen area is a possible overflow for cold code later. **But 32 MB and 56 MB already hang on the loading screen while 16 MB works**, so a second, lower limit (or a loader problem with the zero-filled test) is still unexplained; being narrowed down with the 20/24/28 MB and random-filled 32 MB builds. | — |
 
 ## 4. Host dependency audit (runtime/ + aurora)
 
@@ -198,7 +201,7 @@ The user said "do what you think will work best" (2026-11-15), so the recommenda
 
 ## 9. Open problems / risks
 1. **Performance:** Espresso runs at 1.24 GHz with no SIMD beyond paired singles, while upstream asks for a 3.5 GHz x86 CPU. `-Os` code and a checked memory path every access will cost speed. Expect profiling work, selective `-O2`, and possibly native paired-single asm.
-2. **Code size** has little margin if MKWii expands much more than the probe; the 32 MiB codegen area is the fallback.
+2. **Code size:** if the practical limit really is between 16 and 32 MB, the estimated 27–40 MB at `-Os` does not fit in one RPX. Options then: split cold code into RPLs or the 32 MiB codegen area, shrink the translator's inlined helpers, or exclude unused code (e.g. online and Retro Rewind paths).
 3. **GX → GX2** is the largest work item (Phase 3).
 4. Signalling-NaN corner cases: other float→double widenings (outside the paired-single helpers) keep SNaNs on PowerPC where x86 quiets them. Games essentially never produce SNaNs, so this is only noted.
 5. The container is temporary; work is pushed to `wiiu-port`. `/opt/devkitpro` and the .NET SDK must be reinstalled in each new cloud session (§2).
