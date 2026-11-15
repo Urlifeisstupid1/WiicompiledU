@@ -35,7 +35,8 @@ cmake --build wiiu/build
 | `tests/bigtext` 32 / 56 MB | Loader limit | `far_fn(4) = 13` | **Stuck on the loading screen** |
 | `tests/bigtext` 20 / 24 / 28 MB, zero-filled | Find the threshold | `far_fn(4) = 13` | **OK** |
 | `tests/bigtext` 32 MB, random-filled | Is the hang caused by the compression ratio? | `far_fn(4) = 13` | **Stuck**: it is the size, not compression |
-| `tests/codegen/wiiu_codegen_probe` (new) | Is Aroma's 32 MiB codegen (JIT) area usable as overflow space for code? | Area address/size, full-area sled returns 7, codegen→RPX call returns 141, report on SD (`wiicompiled_codegen.txt`) | Not tested yet |
+| `tests/codegen/wiiu_codegen_probe` round 1 | Is Aroma's 32 MiB codegen (JIT) area usable as overflow space for code? | Area info, sled returns 7, codegen→RPX call returns 141 | **Area at `0x01800000`, 32 MiB, core 1. RPX code loads at `0x0C000000`. `OSCodegenCopy` refused (even 48 bytes).** |
+| `tests/codegen/wiiu_codegen_probe` round 2 | Tries `OSCodegenCopy` at other sizes/offsets and the `OSSwitchSecCodeGenMode` RW→memcpy→RX route; logs each step to SD as it goes | `RESULT: codegen area usable…` | Not tested yet |
 
 ## 3. Audit findings — blockers found by building
 
