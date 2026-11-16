@@ -39,7 +39,7 @@ cmake --build wiiu/build
 | `tests/codegen/wiiu_codegen_probe` round 2 | Tries `OSCodegenCopy` at other sizes/offsets and the `OSSwitchSecCodeGenMode` RW→memcpy→RX route | `RESULT: codegen area usable…` | **`OSCodegenCopy` refused at every size; `OSSwitchSecCodeGenMode` RW → memcpy → RX works. Codegen→RPX call returned 141; the full 32 MiB nop sled ran (fill 313 ms, run 145 ms).** |
 | `tests/overlay/wiiu_overlay_test` round 1 | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | **Loader refused the image: `bad relocation 24`.** Cause: ld rewrites the cold `.eh_frame` but `--emit-relocs` keeps the pre-rewrite offsets, which pointed past the image. Fixed in the split tool (parses CIEs/FDEs itself; bounds-checks every relocation at build time). |
 | `tests/overlay/wiiu_overlay_test` round 2 | Same test with the fixed tool | `RESULT: ALL PASSED` | **All 9 single-core checks pass** (load, both call directions, small data, bss, rodata, jump table, function-pointer table, libc, exceptions both ways through cold frames). **Froze in the all-cores check before logging core 0.** |
-| `tests/overlay/wiiu_overlay_test` round 3 | Per core (1, 0, 2): RPX control, then cold code; ISI/DSI handler records the fault; 3 s timeout | Shows whether cold code is executable only on the codegen core (1) | Not tested yet |
+| `tests/overlay/wiiu_overlay_test` round 3 | Per core (1, 0, 2): RPX control, then cold code; ISI/DSI handler records the fault; 3 s timeout | Shows whether cold code is executable only on the codegen core (1) | **All single-core checks pass again. RPX code runs on cores 0, 1, 2. Cold code runs on core 1 only; cores 0 and 2 take an ISI at `0x01800064`.** → D9. The test now treats that as the expected result. |
 
 ## 3. Audit findings — blockers found by building
 
@@ -217,7 +217,8 @@ The user said "do what you think will work best" (2026-11-15), so the recommenda
 | D5 | GX2 shader strategy | Decide at Phase 3; leaning toward a precompiled TEV uber-shader. |
 | D6 | Guest MEM2 size | **64 MB** (retail), unless a mod turns out to need upstream's 128 MB. |
 | D7 | Code-size strategy | **`-Os` for translated code**, hot functions at `-O2` within the budget. |
-| D8 | Using more than ~28 MB of code (new) | **Split build:** the RPX holds the runtime and hot translated code (≤ ~28 MB); the remaining translated code is linked at the codegen address, split out into `cold.bin` in the .wuhb content folder, and copied into the codegen area at startup. See §6.3. |
+| D8 | Using more than ~28 MB of code | **Split build:** the RPX holds the runtime and hot translated code (≤ ~28 MB); the remaining translated code is linked at the codegen address, split out into `cold.bin` in the .wuhb content folder, and copied into the codegen area at startup. See §6.3. |
+| D9 | Which cores run translated code (new, forced by hardware) | **Core 1 only** (the codegen core). The guest scheduler thread, which runs every guest fiber, is pinned to core 1. Runtime-only threads (GX worker, AX mixer, I/O) may use cores 0 and 2 but must never call translated code. Upstream already defers guest callbacks (AX resume callbacks, DVD/NAND completions) to the guest thread. Phase 2 adds a debug check on entry to translated dispatch. |
 
 ## 9. Open problems / risks
 1. **Performance:** Espresso runs at 1.24 GHz with no SIMD beyond paired singles, while upstream asks for a 3.5 GHz x86 CPU. `-Os` code and a checked memory path every access will cost speed. Expect profiling work, selective `-O2`, and possibly native paired-single asm.

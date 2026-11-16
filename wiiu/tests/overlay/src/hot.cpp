@@ -4,6 +4,7 @@
 #include "shared.h"
 #include "wiicold_loader.h"
 
+#include <coreinit/codegen.h>
 #include <coreinit/context.h>
 #include <coreinit/core.h>
 #include <coreinit/exception.h>
@@ -61,11 +62,13 @@ extern "C" void HotThrow(int code)
 // RPX data pointing at cold code (absolute relocations dropped by the split tool).
 static int (*const g_coldTable[])(int) = {ColdCompute, ColdSwitch};
 
-// Round 2 on hardware froze in the all-cores check before logging core 0.
-// Each core now runs plain RPX code first (control), then cold code, with every
-// step logged before it starts. ISI/DSI exceptions are caught: the handler
-// records the faulting address and ends the thread, and a 3-second timeout
-// catches a thread that hangs without faulting.
+// Hardware result (round 3): the codegen area is executable ONLY on the codegen
+// core (core 1); cold code on cores 0 and 2 takes an ISI exception. That is now
+// the expected outcome and the rule the port follows (PORTING_NOTES.md, D9):
+// translated code only ever runs on core 1. Each core runs plain RPX code first
+// (control), then cold code, with every step logged before it starts. ISI/DSI
+// exceptions are caught (the handler records the address and ends the thread)
+// and a 3-second timeout catches a thread that hangs without faulting.
 static volatile uint32_t g_faultType;
 static volatile uint32_t g_faultSrr0;
 static volatile uint32_t g_faultDar;
@@ -152,10 +155,17 @@ static void CheckOnAllCores()
                 ++g_failures;
                 Report("FAIL %s: thread did not finish within 3 s", what);
             } else if (result == -999) {
-                ++g_failures;
-                Report("FAIL %s: %s exception at 0x%08lX (DAR 0x%08lX)", what,
+                const bool expected = cold && core != (OSGetCodegenCore() & 3u) && g_faultType == 3;
+                if (!expected)
+                    ++g_failures;
+                Report("%s %s: %s exception at 0x%08lX (DAR 0x%08lX)%s", expected ? "OK  " : "FAIL", what,
                        g_faultType == 3 ? "ISI (instruction fetch)" : "DSI (data access)",
-                       (unsigned long)g_faultSrr0, (unsigned long)g_faultDar);
+                       (unsigned long)g_faultSrr0, (unsigned long)g_faultDar,
+                       expected ? " - expected, cold code runs only on the codegen core" : "");
+            } else if (cold && core != (OSGetCodegenCore() & 3u)) {
+                ++g_failures;
+                Report("FAIL %s: ran (got %d) - the codegen area is executable here after all; "
+                       "update PORTING_NOTES.md D9", what, result);
             } else {
                 Check(what, result, 41 + (long long)core * 1000);  // HotOnly(40) and ColdSwitch(3) are both 41
             }
