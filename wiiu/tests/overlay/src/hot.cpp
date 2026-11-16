@@ -4,7 +4,10 @@
 #include "shared.h"
 #include "wiicold_loader.h"
 
+#include <coreinit/context.h>
 #include <coreinit/core.h>
+#include <coreinit/exception.h>
+#include <coreinit/time.h>
 #include <coreinit/memdefaultheap.h>
 #include <coreinit/thread.h>
 #include <stdarg.h>
@@ -58,31 +61,105 @@ extern "C" void HotThrow(int code)
 // RPX data pointing at cold code (absolute relocations dropped by the split tool).
 static int (*const g_coldTable[])(int) = {ColdCompute, ColdSwitch};
 
-static int RunOnCore(int argc, void *argv)
+// Round 2 on hardware froze in the all-cores check before logging core 0.
+// Each core now runs plain RPX code first (control), then cold code, with every
+// step logged before it starts. ISI/DSI exceptions are caught: the handler
+// records the faulting address and ends the thread, and a 3-second timeout
+// catches a thread that hangs without faulting.
+static volatile uint32_t g_faultType;
+static volatile uint32_t g_faultSrr0;
+static volatile uint32_t g_faultDar;
+
+extern "C" __attribute__((noinline)) int HotOnly(int x)
+{
+    return x + 1;
+}
+
+static void FaultExit()
+{
+    OSExitThread(-999);
+}
+
+static BOOL OnIsi(OSContext *context)
+{
+    g_faultType = 3;
+    g_faultSrr0 = context->srr0;
+    context->srr0 = (uint32_t)&FaultExit;
+    return TRUE;
+}
+
+static BOOL OnDsi(OSContext *context)
+{
+    g_faultType = 2;
+    g_faultSrr0 = context->srr0;
+    g_faultDar = context->dar;
+    context->srr0 = (uint32_t)&FaultExit;
+    return TRUE;
+}
+
+static int RunHotOnCore(int argc, void *argv)
+{
+    (void)argc;
+    (void)argv;
+    return HotOnly(40) + (int)OSGetCoreId() * 1000;
+}
+
+static int RunColdOnCore(int argc, void *argv)
 {
     (void)argc;
     (void)argv;
     return ColdSwitch(3) + (int)OSGetCoreId() * 1000;
 }
 
+static int RunThreadOnCore(uint32_t core, OSThreadEntryPointFn entry, bool *finished)
+{
+    const uint32_t stackSize = 16 * 1024;
+    OSThread *thread = (OSThread *)MEMAllocFromDefaultHeapEx(sizeof(OSThread), 16);
+    uint8_t *stack = (uint8_t *)MEMAllocFromDefaultHeapEx(stackSize, 16);
+    int result = -1;
+    *finished = false;
+    if (thread && stack &&
+        OSCreateThread(thread, entry, 0, nullptr, stack + stackSize, stackSize, 16,
+                       (OSThreadAttributes)(1u << core))) {
+        g_faultType = 0;
+        OSResumeThread(thread);
+        for (int waited = 0; waited < 300 && !OSIsThreadTerminated(thread); ++waited)
+            OSSleepTicks(OSMillisecondsToTicks(10));
+        if (OSIsThreadTerminated(thread)) {
+            OSJoinThread(thread, &result);
+            *finished = true;
+            MEMFreeToDefaultHeap(thread);
+            MEMFreeToDefaultHeap(stack);
+        }
+        // A hung thread keeps its stack and OSThread: freeing them would be unsafe.
+    }
+    return result;
+}
+
 static void CheckOnAllCores()
 {
-    for (uint32_t core = 0; core < 3; ++core) {
-        const uint32_t stackSize = 16 * 1024;
-        OSThread *thread = (OSThread *)MEMAllocFromDefaultHeapEx(sizeof(OSThread), 16);
-        uint8_t *stack = (uint8_t *)MEMAllocFromDefaultHeapEx(stackSize, 16);
-        int result = -1;
-        if (thread && stack &&
-            OSCreateThread(thread, RunOnCore, 0, nullptr, stack + stackSize, stackSize, 16,
-                           (OSThreadAttributes)(1u << core))) {
-            OSResumeThread(thread);
-            OSJoinThread(thread, &result);
+    OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_ISI, OnIsi);
+    OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_DSI, OnDsi);
+    static const uint32_t order[] = {1, 0, 2};
+    for (uint32_t core : order) {
+        for (int cold = 0; cold < 2; ++cold) {
+            Report("...  starting %s code on core %lu", cold ? "cold" : "RPX", (unsigned long)core);
+            bool finished = false;
+            const int result = RunThreadOnCore(core, cold ? RunColdOnCore : RunHotOnCore, &finished);
+            char what[64];
+            snprintf(what, sizeof(what), "%s code on core %lu", cold ? "cold" : "RPX", (unsigned long)core);
+            if (!finished) {
+                ++g_failures;
+                Report("FAIL %s: thread did not finish within 3 s", what);
+            } else if (result == -999) {
+                ++g_failures;
+                Report("FAIL %s: %s exception at 0x%08lX (DAR 0x%08lX)", what,
+                       g_faultType == 3 ? "ISI (instruction fetch)" : "DSI (data access)",
+                       (unsigned long)g_faultSrr0, (unsigned long)g_faultDar);
+            } else {
+                Check(what, result, 41 + (long long)core * 1000);  // HotOnly(40) and ColdSwitch(3) are both 41
+            }
         }
-        char what[64];
-        snprintf(what, sizeof(what), "cold code on core %lu", (unsigned long)core);
-        Check(what, result, 41 + (long long)core * 1000);
-        MEMFreeToDefaultHeap(thread);
-        MEMFreeToDefaultHeap(stack);
     }
 }
 
