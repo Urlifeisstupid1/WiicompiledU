@@ -1040,6 +1040,13 @@ inline std::filesystem::path ResolveRelativeToConfig(const std::string& value) {
 // The extracted DATA directory. Empty when nothing is configured.
 inline std::filesystem::path ResolvedDvdRoot() {
     const std::string configured = DvdRoot();
+#if defined(__WIIU__)
+    // Wii U: there is no installer to write paths.dvd_root, so the extracted disc
+    // defaults to sd:/WiiCompiled/DATA. A configured value still wins.
+    if (configured.empty()) {
+        return ApplicationDataDirectory() / "DATA";
+    }
+#endif
     return configured.empty() ? std::filesystem::path{} : ResolveRelativeToConfig(configured);
 }
 

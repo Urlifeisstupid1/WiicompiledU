@@ -173,7 +173,7 @@ function(mkw_wiiu_add_product target)
     file(COPY "${MKW_RUNTIME_SOURCE_DIR}/assets/wii/" DESTINATION "${content_dir}/wii_bootstrap")
     # The runtime loads fs:/vol/content/cold.bin at startup when the product has one.
     if(ARG_COLD_LIBRARIES)
-        wiiu_add_cold_overlay(${target} IMAGE "${content_dir}/cold.bin")
+        wiiu_add_cold_overlay(${target} IMAGE "${content_dir}/cold.bin" NO_LOADER)
     endif()
     # The translator's data-blob assembly declares .note.GNU-stack, which elf2rpl rejects.
     add_custom_command(TARGET ${target} POST_BUILD
@@ -200,6 +200,7 @@ if(MKW_BUILD_PRODUCTS AND EXISTS "${MKW_WIIU_SHARD_MANIFEST}")
     # registration/sensitive sets stay in the RPX.
     add_library(wiicold_mkw_base_shared STATIC ${MKW_BASE_COMMON_SHARDS})
     mkw_wiiu_configure(wiicold_mkw_base_shared)
+    wiiu_cold_library(wiicold_mkw_base_shared)
     target_compile_definitions(wiicold_mkw_base_shared PRIVATE
         MKW_TRANSLATED_GUEST_REGION=${MKW_TRANSLATED_GUEST_REGION})
     target_compile_options(wiicold_mkw_base_shared PRIVATE -Os ${MKW_TRANSLATED_PPC_FP_OPTIONS} -w)

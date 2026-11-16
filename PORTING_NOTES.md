@@ -40,7 +40,8 @@ cmake --build wiiu/build
 | `tests/overlay/wiiu_overlay_test` round 1 | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | **Loader refused the image: `bad relocation 24`.** Cause: ld rewrites the cold `.eh_frame` but `--emit-relocs` keeps the pre-rewrite offsets, which pointed past the image. Fixed in the split tool (parses CIEs/FDEs itself; bounds-checks every relocation at build time). |
 | `tests/overlay/wiiu_overlay_test` round 2 | Same test with the fixed tool | `RESULT: ALL PASSED` | **All 9 single-core checks pass** (load, both call directions, small data, bss, rodata, jump table, function-pointer table, libc, exceptions both ways through cold frames). **Froze in the all-cores check before logging core 0.** |
 | `tests/overlay/wiiu_overlay_test` round 3 | Per core (1, 0, 2): RPX control, then cold code; ISI/DSI handler records the fault; 3 s timeout | Shows whether cold code is executable only on the codegen core (1) | **All single-core checks pass again. RPX code runs on cores 0, 1, 2. Cold code runs on core 1 only; cores 0 and 2 take an ISI at `0x01800064`.** → D9. The test now treats that as the expected result. |
-| `wiiu_runtime_smoke` (new, built by `runtime/` CMake, §6.7) | Upstream's real `RuntimeMain` with no game code: startup on core 1, SD + screen log, Config.toml defaults, guest RAM (MEM1 + 128 MB MEM2 + overlay), system bridge, aurora-wiiu, GX worker thread, then the normal error path | Log reaches `No translated function registered at address 0x...`, then `The runtime stopped with an error`, waits for HOME; `sd:/WiiCompiled/Logs/console.log` exists | Not tested yet |
+| `wiiu_runtime_smoke` (built by `runtime/` CMake, §6.7) | Upstream's real `RuntimeMain` with no game code: startup on core 1, SD + screen log, Config.toml defaults, guest RAM (MEM1 + 128 MB MEM2 + overlay), system bridge, aurora-wiiu, GX worker thread, then the normal error path | Log reaches `No translated function registered at address 0x...`, then `The runtime stopped with an error`, waits for HOME | **Exactly as expected** (user photo): aurora-wiiu banner, config line, GX worker started, `No translated function registered at address 0x800060a4`, crash artifacts written to `sd:/WiiCompiled/Logs`, clean stop. Long lines were cut off on the GamePad, so lines now wrap at 64 columns. |
+| `tests/overlay/wiiu_overlay_test` round 4 | Same checks with cold image v2 (unwind tables in the heap) and the RPX linked at `0x04000000` (§6.9) | `RESULT: ALL PASSED` (cold code on cores 0/2 = expected ISI) | Not tested yet |
 | `tests/primitives/wiiu_primitives_test` (new) | `MKW_THREAD_LOCAL` (int, `std::string`, array) on 3 cores at once; 64-bit atomic shim under 3-core contention (`uint64_t` fetch_add touching both halves, `double` CAS loop); runtime `HostContext` fibers on the codegen core (4 contexts x 5000 switches), calling cold-overlay code and keeping FP/integer state across switches | `RESULT: ALL PASSED`; log `wiicompiled_primitives.txt` | **Round 1: thread-locals isolated on all 3 cores; 64-bit atomics exact under contention (80 ms); 20,000 fiber switches on core 1 in 4.9 ms with `IsCurrent` always right; fiber 0's FP/integer state exact. Fibers 1 and 2 reported 0 because of a test bug (a finished fiber returned to the scheduler instead of handing over to the next fiber).** Round 2 (fixed test): **ALL PASSED** (user). |
 
 ## 3. Audit findings — blockers found by building
@@ -283,10 +284,37 @@ cmake --build build-wiiu
 
 **Sizes (smoke test, no game code):** RPX text 2.9 MB, data 2.0 MB. That leaves about 25 MB of RPX code space plus the 32 MiB codegen area for translated code.
 
-### 6.8 Remaining for Phase 2
-1. Hardware run of `wiiu_runtime_smoke`.
-2. Add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
-3. First boot with your translation: run the translator on your PC (as for the PC build), then build `runtime/` with the Wii U toolchain. Instructions to follow once the smoke test passes.
+### 6.8 Building the game: `wiiu/build-game.sh`
+Run it on Linux, or in devkitPro's MSYS2 shell on Windows. It:
+- checks the tools (devkitPro + `wiiu-cmake`, CMake ≥ 3.25, git, Python 3, .NET 8 SDK);
+- checks your `Assets/main.dol` + `Assets/StaticR.rel` with upstream's `Launcher/build-cache.sh` (only clean PAL/NTSC-U/NTSC-J pass);
+- builds the translator and runs the same base translation as upstream's `Launcher/local-build.sh` (`translate-recursive`, `emit-base-manifest`, `generate-data-init`, `emit-build-shards`);
+- initialises the aurora headers and builds `build-wiiu/WiiCompiled.wuhb`.
+
+`--skip-translation` rebuilds only the `.wuhb`. On the Wii U, `paths.dvd_root` defaults to `sd:/WiiCompiled/DATA`, so no `Config.toml` is needed.
+
+**Tested here with a stand-in for the game:** my homebrew probe's 275 translated functions plus a fake `shards.cmake`, through the real `WiiCompiled` product path. This found and fixed three problems before they could reach a console:
+1. The cold-image loader was linked twice.
+2. At `-Os`, GCC calls libgcc's out-of-line register save/restore helpers (`_savegpr_*`, `_restgpr_*_x`, `_savefpr_*` …) with plain relative branches that `-mlongcall` does not cover. Fix: `wiiu_cold_library()` gives cold code private renamed copies (`libwiicold_savres.a`, built from libgcc's `crtsav*`/`crtres*` under the GCC Runtime Library Exception).
+3. The cold unwind tables contained entries for functions the linker kept in the RPX (inline/template duplicates) and for discarded functions. These are now neutralised (zero range).
+
+### 6.9 Cold image v2 and link layout
+- **The unwind tables were larger than the code** (probe: 187 KB vs 147 KB), so they no longer use the 32 MiB executable area:
+  - `.wiicold_eh` is linked at `0x80000000`.
+  - The loader copies it into heap memory and writes every PC-relative pointer for its real address (relocation type 200).
+  - It is then registered with `__register_frame_info`.
+- **`cold.bin` v2:** header, anchors, code relocations, unwind-table relocations, code, unwind tables (see `wiiu_cold_split.py`).
+- **The RPX's code is now linked at `0x04000000`** instead of wut's `0x02000000`. A game-sized cold section (`0x01800000` + 32 MiB) would otherwise overlap it at link time. The link address is arbitrary because Cafe OS relocates the RPX; the overlay test round 4 confirms the loader accepts it.
+- The `coldmem` region is exactly 32 MiB, so a too-large cold section fails at link time with a clear region-overflow error.
+- **Verified offline on the probe product:**
+  - zero-delta round trip of the code is exact;
+  - with the unwind tables placed at an arbitrary heap address, all 276 live FDEs point into cold code;
+  - 0 out-of-bounds relocations.
+
+### 6.10 Remaining for Phase 2
+1. Hardware run of the overlay test round 4 (new layout).
+2. First boot with your game (`wiiu/build-game.sh`).
+3. Add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
 2. `runtime/CMakeLists.txt`: an `MKW_PLATFORM_WIIU` branch (GCC, 32-bit, no aurora/Dawn/SDL3, stubs for GX/VI/audio/input), with `-Os -mlongcall` for translated shards, cold shards as `wiicold_*` libraries via `WiiUCold.cmake` (D8), and `wut_create_rpx`/`wut_create_wuhb`.
 3. Platform layer: guest RAM from MEM2, SD paths, crash handler, and a log to the SD card and the screen.
 4. Boot test. This needs your own game files. The translator runs on **your PC** against your disc; the .wuhb that comes out contains translated game code, so it is for your own console only and must never be shared.

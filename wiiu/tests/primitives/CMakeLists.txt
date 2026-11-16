@@ -5,7 +5,8 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/WiiUCold.cmake")
 set(runtime_dir "${CMAKE_CURRENT_SOURCE_DIR}/../../../runtime")
 
 add_library(wiicold_primitives_test STATIC src/cold.cpp)
-target_compile_options(wiicold_primitives_test PRIVATE -O2 -Wall ${WIIU_COLD_COMPILE_OPTIONS})
+target_compile_options(wiicold_primitives_test PRIVATE -O2 -Wall)
+wiiu_cold_library(wiicold_primitives_test)
 
 add_executable(wiiu_primitives_test
     src/main.cpp

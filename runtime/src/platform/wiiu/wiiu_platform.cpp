@@ -29,6 +29,7 @@ namespace WiiuPlatform {
 namespace {
 
 constexpr const char* kSdRoot = "fs:/vol/external01";
+constexpr size_t kScreenColumns = 64;
 
 // ---- log sink: stdout/stderr -> SD file + screen ---------------------------
 FILE* g_logFile = nullptr;
@@ -61,8 +62,14 @@ ssize_t LogWrite(struct _reent* reent, void* fd, const char* data, size_t length
         if (data[i] == '\n') {
             WHBLogPrint(g_pendingLine.c_str());
             g_pendingLine.clear();
-        } else if (data[i] != '\r' && g_pendingLine.size() < 160) {
+        } else if (data[i] != '\r') {
             g_pendingLine.push_back(data[i]);
+            // About 66 characters fit across the GamePad screen: wrap long lines
+            // instead of cutting them off (continuations are indented).
+            if (g_pendingLine.size() >= kScreenColumns) {
+                WHBLogPrint(g_pendingLine.c_str());
+                g_pendingLine.assign("    ");
+            }
         }
     }
     DrawConsoleThrottled(false);

@@ -3,7 +3,8 @@
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/WiiUCold.cmake")
 
 add_library(wiicold_overlay_test STATIC src/cold.cpp)
-target_compile_options(wiicold_overlay_test PRIVATE -O2 -Wall ${WIIU_COLD_COMPILE_OPTIONS})
+target_compile_options(wiicold_overlay_test PRIVATE -O2 -Wall)
+wiiu_cold_library(wiicold_overlay_test)
 
 add_executable(wiiu_overlay_test src/hot.cpp)
 target_compile_options(wiiu_overlay_test PRIVATE -O2 -Wall ${WIIU_COLD_COMPILE_OPTIONS})
