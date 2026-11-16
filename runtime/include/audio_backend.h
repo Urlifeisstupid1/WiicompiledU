@@ -5,7 +5,11 @@
 #include <mutex>
 #include <vector>
 
+#include "platform/host_features.h"
+
+#if MKW_HAS_SDL
 #include <SDL3/SDL_audio.h>
+#endif
 
 class AudioBackend {
 public:
@@ -38,8 +42,13 @@ private:
     void ApplyGainLocked();
 
     mutable std::mutex m_mutex;
+#if MKW_HAS_SDL
     SDL_AudioStream* m_stream = nullptr;
     SDL_AudioSpec m_spec{};
+#else
+    // Wii U: implemented in src/platform/wiiu/audio_backend_wiiu.cpp.
+    void* m_platform = nullptr;
+#endif
     uint32_t m_sampleRate = 0;
     uint32_t m_channels = 0;
     bool m_initialized = false;

@@ -199,7 +199,8 @@ Limits: qemu does not model FPSCR[NI] flushing like Espresso, and nothing here h
 |---|---|
 | Upstream code as-is (C++17) | 23 / 100 |
 | + `gnu++20` (upstream relies on Clang accepting `constinit`, `std::u8string`, `std::rotr` in C++17 mode), `setjmp` instead of `sigsetjmp` on Wii U | 44 / 100 |
-| + all 47 `thread_local`s converted to `MKW_THREAD_LOCAL` (script + 12 use sites with `MKW_TLS`), Wii U graphics-API entry, 32-bit padding in the GX worker command header | **56 / 100** |
+| + all 47 `thread_local`s converted to `MKW_THREAD_LOCAL` (script + 12 use sites with `MKW_TLS`), Wii U graphics-API entry, 32-bit padding in the GX worker command header | 56 / 100 |
+| + D10: aurora-wiiu headers, `MKW_HAS_SDL`, Wii U `AudioBackend` (null sink), `WiiuPlatform` + Wii U branches in `main.cpp`, `sd:/WiiCompiled` data root; host-only and network files excluded | **81 / 81 in the Wii U source set** |
 
 Host Clang (x86-64) compiles every runtime file exactly as before these changes. The only failures, `network_ssl.cpp` and `gx_dl.cpp`, are pre-existing: `mbedtls` and `xxhash` are not in this sandbox.
 
@@ -212,8 +213,32 @@ Other changes made along the way:
 - `wii_es_crypto.h`: on Wii U, a per-call Crypto++ `RandomPool` seeded from OS timers replaces `AutoSeededRandomPool` (there is no OS RNG). It is only used to sign local ES identity data.
 - `ReadAramByte` now looks up its thread-local window once per call; that's a per-byte TLS lookup on the Wii U, to optimise later.
 
-### 6.6 Remaining for Phase 2
-1. D10: Wii U stand-ins for aurora + SDL3 so the 32 remaining files compile; add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
+### 6.6 D10 so far (aurora + SDL3 on the Wii U)
+- **`wiiu/aurora-wiiu/include/`** is searched before aurora's include directory.
+  - `aurora/event.h`: the same event types without SDL3.
+  - `dolphin/gx/GXGeometry.h`: aurora's copy with one change. The C++ `GXSetArray` overload gets `extern "C++"`, because GCC rejects a second C-linkage overload; Clang accepted it. Worth upstreaming to aurora.
+- **`include/platform/host_features.h`: `MKW_HAS_SDL`** is 0 on the Wii U and guards the SDL parts of `audio_backend.h` and `pad.cpp`. On the Wii U the PC-only trigger/expression/motion layers are skipped, since aurora-wiiu's `PADRead` reports final statuses.
+- **`src/platform/wiiu/audio_backend_wiiu.cpp`:** a null-sink `AudioBackend` (sndcore2 in Phase 4).
+- **`include/platform/wiiu_platform.h` + `src/platform/wiiu/wiiu_platform.cpp`:**
+  - ProcUI, plus an on-screen log on TV and GamePad.
+  - Pins the main (guest) thread to the codegen core (D9).
+  - stdout/stderr go to `sd:/WiiCompiled/Logs/console.log` (previous run kept as `console.prev.log`) and to the screen, via a devoptab.
+  - Loads the cold image (D8).
+  - DSI/ISI/program/alignment faults are caught by OS exception callbacks, the exception is left via an SRR0 trampoline, and the report is written from normal thread context.
+- **`main.cpp`:** Wii U branches only; upstream's `RuntimeMain` boot sequence stays the single source of truth.
+  - Startup calls `WiiuPlatform::Startup` + the fault handler.
+  - No pipe transcript.
+  - The fatal popup goes to the log.
+  - Graphics-API table: `auto`/`gx2`.
+- **Paths:** `RuntimePlatform::ApplicationDataDirectory` = `sd:/WiiCompiled` (Config.toml, DATA/, NAND/, Logs/). There is no executable directory, so portable-install detection is skipped.
+- **Excluded from the Wii U build:**
+  - `audio_backend.cpp`, `input_bindings.cpp`, `motion_trick.cpp`
+  - flat memory, Discord, Steam Input, ImGui overlay/wizard, friend-code keyboard
+  - wiimote host/BT platform (KPAD/WPAD in Phase 4)
+  - `hle/net/*` (stubbed until online play)
+
+### 6.7 Remaining for Phase 2
+1. aurora-wiiu stub library: no-op implementations of the `aurora_*`, `GX*`, `VI*`, `PAD*` functions the runtime links against; network HLE stubs; then a full link. Add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
 2. `runtime/CMakeLists.txt`: an `MKW_PLATFORM_WIIU` branch (GCC, 32-bit, no aurora/Dawn/SDL3, stubs for GX/VI/audio/input), with `-Os -mlongcall` for translated shards, cold shards as `wiicold_*` libraries via `WiiUCold.cmake` (D8), and `wut_create_rpx`/`wut_create_wuhb`.
 3. Platform layer: guest RAM from MEM2, SD paths, crash handler, and a log to the SD card and the screen.
 4. Boot test. This needs your own game files. The translator runs on **your PC** against your disc; the .wuhb that comes out contains translated game code, so it is for your own console only and must never be shared.

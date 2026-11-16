@@ -40,6 +40,10 @@
 #include <windows.h>
 #include <mmsystem.h>
 #include <dbghelp.h>
+#elif defined(__WIIU__)
+#include <fcntl.h>
+#include <signal.h>
+#include "platform/wiiu_platform.h"
 #else
 #include <fcntl.h>
 #include <signal.h>
@@ -58,6 +62,11 @@
 #endif
 
 #include "abi_bridge.h"
+
+#if defined(__WIIU__) && !defined(MKW_WIIU_COLD_IMAGE_PATH)
+// The cold-code image inside the .wuhb (D8); "" for a build without one.
+#define MKW_WIIU_COLD_IMAGE_PATH "fs:/vol/content/cold.bin"
+#endif
 #include "audio_backend.h"
 #include "boot_race.h"
 #include "guest_abi/guest_region.h"
@@ -424,6 +433,13 @@ std::string ReadInstalledSetupVersion() {
 }
 
 void InitializeProcessTranscript(int argc, char** argv) {
+#if defined(__WIIU__)
+    // stdout/stderr already go to sd:/WiiCompiled/Logs/console.log and the screen
+    // (WiiuPlatform::Startup); there are no pipes or file descriptors to mirror.
+    (void)argc;
+    (void)argv;
+    return;
+#endif
     auto& state = GetProcessTranscriptState();
     if (state.initialized.exchange(true, std::memory_order_acq_rel)) {
         return;
@@ -803,6 +819,9 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
 #if defined(_WIN32)
         ::MessageBoxA(nullptr, message.c_str(), "WiiCompiled - Fatal Error",
                       MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TASKMODAL);
+#elif defined(__WIIU__)
+        // The caller exits right after this; print the message to the screen log.
+        RT_LOGF(RT_TAG_RUNTIME, "fatal: %s\n", message.c_str());
 #else
         // The shipped product is Windows-first. Keep non-Windows builds safe
         // and retain the console diagnostic when no native dialog is available.
@@ -1126,6 +1145,34 @@ void InstallSehLogger() {
         SetUnhandledExceptionFilter(UnhandledSehFilter);
     }
 }
+#elif defined(__WIIU__)
+// Wii U counterpart to SehLogger: Cafe OS reports faults through exception
+// callbacks. WiiuPlatform leaves the exception first and then calls this on the
+// faulting thread, so writing the crash artifacts here is safe.
+void ReportWiiUFault(const WiiuPlatform::Fault& fault) {
+    std::ostringstream details;
+    details << fault.kind << " at 0x" << std::hex << fault.srr0 << " (DAR 0x" << fault.dar
+            << ", LR 0x" << fault.lr << std::dec << ") on core " << fault.core
+            << " thread " << (fault.threadName ? fault.threadName : "?");
+    RT_LOG(RT_TAG_RUNTIME) << "Host fault: " << details.str();
+    if (!g_lastEntryLabel.empty()) {
+        std::cerr << " while executing " << g_lastEntryLabel;
+    }
+    std::cerr << std::endl;
+    if (const CpuContext* cpu = TryGetCpuContext()) {
+        RT_LOG(RT_TAG_RUNTIME) << "===== DUMPING CPU STATE =====" << std::endl;
+        SystemBridge::DumpCpuState(cpu);
+    }
+    if (!g_fatalErrorReported.load(std::memory_order_acquire)) {
+        WriteFatalLogImpl("host_fault", details.str());
+    }
+    std::fflush(stdout);
+    std::fflush(stderr);
+}
+
+void InstallWiiUFaultHandler() {
+    WiiuPlatform::InstallFaultHandler(ReportWiiUFault);
+}
 #else
 // POSIX counterpart to SehLogger above. Unlike Windows' AddVectoredExceptionHandler, which lets
 // GuestFlat and this module each install their own handler and defensively re-check each other,
@@ -1346,6 +1393,10 @@ int RuntimeMain(int argc, char** argv) {
     ConfigureWindowsFatalDialogBehavior();
     InstallSehLogger();
     WindowsTimerResolutionGuard timerResolutionGuard;
+#elif defined(__WIIU__)
+    // ProcUI, screen log, SD log, core pinning (D9) and the cold-code image (D8).
+    WiiuPlatform::Startup(MKW_WIIU_COLD_IMAGE_PATH);
+    InstallWiiUFaultHandler();
 #else
     InstallPosixMemoryFaultHandler();
 #endif
@@ -1445,6 +1496,11 @@ int RuntimeMain(int argc, char** argv) {
 #elif defined(_WIN32)
         static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"d3d12", BACKEND_D3D12}, {"vulkan", BACKEND_VULKAN},
+        }};
+#elif defined(__WIIU__)
+        // aurora-wiiu has a single (GX2) backend; aurora's enum has no GX2 value.
+        static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"gx2", BACKEND_AUTO},
         }};
 
 #endif

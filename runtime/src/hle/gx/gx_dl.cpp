@@ -561,8 +561,8 @@ static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr,
 
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    const auto it = MKW_TLS(s_cache).entries.find(key);
-    if (it != MKW_TLS(s_cache).entries.end()) {
+    const auto it = s_cache.entries.find(key);
+    if (it != s_cache.entries.end()) {
         auto& record = it->second;
         const auto& entry = record.result;
         const bool identityMatches = entry.listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
@@ -601,15 +601,15 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
                              uint32_t flattenedBytes) {
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    auto old = MKW_TLS(s_cache).entries.find(key);
-    bool replacing = old != MKW_TLS(s_cache).entries.end();
+    auto old = s_cache.entries.find(key);
+    bool replacing = old != s_cache.entries.end();
     size_t replacedBytes = replacing ? DlScanCacheRecordBytes(old->second) : 0;
     const size_t incomingBytes = static_cast<size_t>(flattenedBytes) +
                                  cpWrites.size() * sizeof(DlCpWrite);
-    if ((!replacing && MKW_TLS(s_cache).entries.size() >= kDlScanCacheMaxEntries) ||
-        MKW_TLS(s_cache).storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
-        MKW_TLS(s_cache).entries.clear();
-        MKW_TLS(s_cache).storedCommandBytes = 0;
+    if ((!replacing && s_cache.entries.size() >= kDlScanCacheMaxEntries) ||
+        s_cache.storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
+        s_cache.entries.clear();
+        s_cache.storedCommandBytes = 0;
         replacing = false;
         replacedBytes = 0;
     }
@@ -627,11 +627,11 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
     if (flattened != nullptr && flattenedBytes != 0) {
         record.flattened.assign(flattened, flattened + flattenedBytes);
     }
-    auto [it, inserted] = MKW_TLS(s_cache).entries.insert_or_assign(key, std::move(record));
+    auto [it, inserted] = s_cache.entries.insert_or_assign(key, std::move(record));
     (void)inserted;
-    MKW_TLS(s_cache).storedCommandBytes += DlScanCacheRecordBytes(it->second);
+    s_cache.storedCommandBytes += DlScanCacheRecordBytes(it->second);
     if (replacing) {
-        MKW_TLS(s_cache).storedCommandBytes -= replacedBytes;
+        s_cache.storedCommandBytes -= replacedBytes;
     }
 }
 

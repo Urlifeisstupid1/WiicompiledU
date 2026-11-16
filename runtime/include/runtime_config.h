@@ -187,7 +187,9 @@ inline std::optional<std::filesystem::path> ExecutableDirectory() {
         }
         buffer.resize(buffer.size() * 2);
     }
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__WIIU__)
+    // Wii U: there is no executable directory (the RPX is inside the .wuhb), so
+    // RuntimePlatform reports none and portable-install detection is skipped.
     return RuntimePlatform::ExecutableDirectory();
 #else
     // /proc/self/exe is a Linux-specific magic symlink to the running executable; readlink()
@@ -246,7 +248,7 @@ inline std::filesystem::path ApplicationDataDirectory() {
         CoTaskMemFree(rawPath);
         return directory;
     }
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__WIIU__)
     return RuntimePlatform::ApplicationDataDirectory(kApplicationDirectoryName);
 #else
     // XDG Base Directory spec equivalent of FOLDERID_LocalAppData: $XDG_DATA_HOME if set and

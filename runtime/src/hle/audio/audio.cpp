@@ -510,7 +510,7 @@ int64_t ConsumeAudioPollDeltaMicros()
     constexpr std::chrono::microseconds kMaxPollDelta{100'000};
 
     const Clock::time_point now = Clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastPoll);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - MKW_TLS(lastPoll));
     if (elapsed.count() < 0 || elapsed > kMaxPollDelta) {
         lastPoll = now;
         return elapsed.count() < 0 ? 0 : kMaxPollDelta.count();

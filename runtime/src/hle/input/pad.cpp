@@ -3,6 +3,7 @@
 #include "hle/controller_status_contract.h"
 #include "input_bindings.h"
 #include "motion_trick.h"
+#include "platform/host_features.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,13 +12,16 @@
 #include <cstdlib>
 #include <cstring>
 
+#if MKW_HAS_SDL
 #include <SDL3/SDL_gamepad.h>
+#endif
 #include <dolphin/pad.h>
 
 namespace {
 
 std::atomic<bool> g_rumbleEnabled{true};
 
+#if MKW_HAS_SDL
 bool NativeButtonHeld(SDL_Gamepad* gamepad, uint32_t nativeButton) {
     if (gamepad == nullptr || nativeButton == PAD_NATIVE_BUTTON_INVALID ||
         nativeButton >= SDL_GAMEPAD_BUTTON_COUNT) {
@@ -69,6 +73,7 @@ void FillTriggersHeldByButtons(PADStatus* statuses) {
         scan(PADGetAltButtonMappings(port, &count), count);
     }
 }
+#endif // MKW_HAS_SDL
 
 void WritePadStatus(uint32_t base, const PADStatus& status) {
     const auto guestStatus = PadStatusContract::Encode({
@@ -115,9 +120,13 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     PADStatus statuses[PAD_CHANMAX]{};
     uint32_t rumbleMask = PADRead(statuses);
 
+#if MKW_HAS_SDL
+    // PC only: SDL gamepad trigger clicks, Dolphin-style input expressions and motion
+    // tricks. On the Wii U, PADRead (aurora-wiiu) already reports the final statuses.
     FillTriggersHeldByButtons(statuses);
     InputBindings::Apply(statuses);
     MotionTrick::Apply(statuses);
+#endif
 
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {

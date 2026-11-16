@@ -18,6 +18,10 @@
 #include <pwd.h>
 #endif
 
+#if defined(__WIIU__)
+#include "platform/wiiu_platform.h"
+#endif
+
 namespace RuntimePlatform {
 
 std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
@@ -72,6 +76,10 @@ std::filesystem::path ApplicationDataDirectory(std::string_view applicationName)
         CoTaskMemFree(rawPath);
         return directory;
     }
+#elif defined(__WIIU__)
+    // sd:/WiiCompiled - the same folder layout as %LOCALAPPDATA%\WiiCompiled on PC.
+    (void)applicationName;
+    return WiiuPlatform::DataRoot();
 #elif defined(__APPLE__)
     if (const char* home = std::getenv("HOME"); home && *home) {
         return std::filesystem::path(home) / "Library" / "Application Support" / applicationName;

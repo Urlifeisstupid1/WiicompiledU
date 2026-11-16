@@ -282,7 +282,7 @@ void ServiceDeferredTimingDuringGxWork() {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (now < g_nextDeferredTimingPoll) {
+    if (now < MKW_TLS(g_nextDeferredTimingPoll)) {
         return;
     }
     g_nextDeferredTimingPoll = now + std::chrono::milliseconds(1);
