@@ -3,6 +3,7 @@
 // AX/DSP HLE internals shared within this directory; ax_dsp.h is the public surface.
 // Hot accessors stay header-inline because the shipped build links runtime shards without LTO.
 
+#include "platform/mkw_thread_local.h"
 #include "isa/big_endian.h"
 #include "guest_abi/guest_region.h"
 #include "memory.h"
@@ -60,7 +61,7 @@ extern std::atomic<uint8_t*> g_mixMem2;
 // True only on the mix worker thread. Guest-thread callers keep the exact
 // fallback behaviour they had before (Memory::Read*/Write*, which materializes
 // deferred reads and reports access violations); the worker instead fails safe.
-extern thread_local bool t_onMixWorker;
+extern MKW_THREAD_LOCAL(bool) t_onMixWorker;
 
 void ReportMixAddressOutOfRange(uint32_t addr, size_t bytes);
 
@@ -202,7 +203,8 @@ uint8_t ReadAramByteSlow(uint32_t addr);
 bool ResolveAramWindow(uint32_t addr, AramWindow& window);
 
 inline uint8_t ReadAramByte(uint32_t addr) {
-    static thread_local AramWindow window{};
+    static MKW_THREAD_LOCAL(AramWindow) t_window{};
+    AramWindow& window = MKW_TLS(t_window);
     if (addr >= window.begin && addr < window.end &&
         window.generation == g_aramWindowGeneration.load(std::memory_order_relaxed)) {
         return window.host[addr - window.begin];

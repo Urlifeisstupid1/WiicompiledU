@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "perf_stats.h"
 
 #include "runtime_log.h"
@@ -14,7 +15,7 @@ using Clock = std::chrono::steady_clock;
 
 constexpr size_t kWindow = 240;
 
-thread_local Clock::duration t_wait{};
+MKW_THREAD_LOCAL(Clock::duration) t_wait{};
 
 struct FrameWindow {
     Clock::time_point last{};
@@ -42,7 +43,7 @@ void OnFramePresented() noexcept {
     }
     const auto now = Clock::now();
     const Clock::duration wait = t_wait;
-    t_wait = {};
+    t_wait = Clock::duration{};
     if (g_window.last == Clock::time_point{}) {
         g_window.last = now;
         return;

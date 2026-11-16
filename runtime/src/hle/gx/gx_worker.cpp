@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "gx_worker.h"
 
 #include "perf_stats.h"
@@ -28,14 +29,17 @@ void GxWorkerReplayFifoBurst(const uint8_t* data, uint32_t sizeBytes);
 namespace GxWorker {
 namespace detail {
 std::atomic<bool> g_active{false};
-constinit thread_local bool t_onWorker = false;
-constinit thread_local int t_inlineDepth = 0;
+MKW_TLS_CONSTINIT MKW_THREAD_LOCAL(bool) t_onWorker = false;
+MKW_TLS_CONSTINIT MKW_THREAD_LOCAL(int) t_inlineDepth = 0;
 bool g_fifoPending = false;
 } // namespace detail
 
 namespace {
 struct Header {
     void (*run)(void* payload);
+#if UINTPTR_MAX == 0xFFFFFFFFu
+    uint32_t pointerPad;  // 32-bit hosts (Wii U): keep the 16-byte header and payload alignment
+#endif
     uint32_t size;
     uint32_t reserved;
 };

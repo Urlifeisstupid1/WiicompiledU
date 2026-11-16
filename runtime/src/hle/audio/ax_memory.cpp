@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "ax_internal.h"
 
 #include "abi_bridge.h"
@@ -27,7 +28,7 @@ uint32_t g_axTaskPtr = kAxDspTaskAddr;
 std::atomic<uint8_t*> g_mixMem1{nullptr};
 std::atomic<uint8_t*> g_mixMem2{nullptr};
 
-thread_local bool t_onMixWorker = false;
+MKW_THREAD_LOCAL(bool) t_onMixWorker = false;
 
 // A guest access the worker had to skip is a real, audible degradation, so it
 // reaches stderr unconditionally - but only once, because the site it fires from

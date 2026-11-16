@@ -30,7 +30,7 @@ namespace HostContext {
 #if defined(_WIN32)
 
 namespace {
-thread_local bool g_convertedScheduler = false;
+MKW_THREAD_LOCAL(bool) g_convertedScheduler = false;
 }
 
 bool InitializeScheduler(Handle* scheduler)

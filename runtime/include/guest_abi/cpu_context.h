@@ -1,5 +1,6 @@
 #pragma once
 
+#include "platform/mkw_thread_local.h"
 #include "isa/ppc_isa_fpenv.h"
 
 #include <cstdint>
@@ -47,7 +48,7 @@ struct CpuContext {
     uint32_t msr;       // Machine State Register
 };
 
-inline thread_local CpuContext* g_currentCpuContext = nullptr;
+inline MKW_THREAD_LOCAL(CpuContext*) g_currentCpuContext = nullptr;
 
 class CpuContextScope {
 public:

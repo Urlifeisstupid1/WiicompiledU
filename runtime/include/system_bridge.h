@@ -10,13 +10,16 @@
 #include <csetjmp>
 
 #include "memory.h"
+#include "platform/mkw_thread_local.h"
 
 // Windows' SehLogger longjmps out of a vectored exception handler, where plain setjmp/longjmp is
 // the norm. A POSIX signal handler jumping back to here must use the sig-prefixed pair instead:
 // only sigsetjmp/siglongjmp save and restore the process signal mask, which is what keeps SIGSEGV
 // from staying blocked (and a second fault during the same ctor loop from escalating instead of
 // trapping) after the first recovered fault.
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__WIIU__)
+// Wii U: there are no POSIX signals (faults arrive through OS exception
+// callbacks), so the signal-mask-saving pair is neither available nor needed.
 using MkwJmpBuf = jmp_buf;
 #define MKW_SETJMP(buf) setjmp(buf)
 #else
@@ -27,12 +30,12 @@ using MkwJmpBuf = sigjmp_buf;
 // Global flag to suppress SEH reporting (caught by system_bridge)
 extern bool g_suppressSehReporting;
 // Jump buffer for SEH recovery
-extern thread_local MkwJmpBuf* g_sehJumpTarget;
+extern MKW_THREAD_LOCAL(MkwJmpBuf*) g_sehJumpTarget;
 // SEH details for the most recent trapped exception (used during ctor execution).
-extern thread_local uint32_t g_sehLastExceptionCode;
-extern thread_local uintptr_t g_sehLastExceptionAddress;
-extern thread_local uintptr_t g_sehLastAccessedAddress;
-extern thread_local uint32_t g_sehLastAccessType;
+extern MKW_THREAD_LOCAL(uint32_t) g_sehLastExceptionCode;
+extern MKW_THREAD_LOCAL(uintptr_t) g_sehLastExceptionAddress;
+extern MKW_THREAD_LOCAL(uintptr_t) g_sehLastAccessedAddress;
+extern MKW_THREAD_LOCAL(uint32_t) g_sehLastAccessType;
 
 void WriteFatalLog(std::string_view reason);
 void SetRuntimeExitCode(int code);

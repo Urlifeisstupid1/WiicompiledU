@@ -1,5 +1,6 @@
 #pragma once
 
+#include "platform/mkw_thread_local.h"
 #include "guest_abi/cpu_context.h"
 #include "guest_abi/exec_guard.h"
 #include "guest_abi/guest_region.h"
@@ -310,8 +311,8 @@ struct IndirectResolvedDispatchMemoEntry {
     uint32_t address;
     const TranslatedFunctionInfo* info;
 };
-inline thread_local IndirectResolvedDispatchMemoEntry
-    g_indirectResolvedDispatchMemo[kIndirectDispatchCacheEntries]{};
+using IndirectResolvedDispatchMemoTable = IndirectResolvedDispatchMemoEntry[kIndirectDispatchCacheEntries];
+inline MKW_THREAD_LOCAL(IndirectResolvedDispatchMemoTable) g_indirectResolvedDispatchMemo{};
 
 // Every raw dispatch record in one open-addressed table, built by Finalize and shared by all
 // threads. Kept at most half full, so a lookup almost always reads a single slot, and unlike a

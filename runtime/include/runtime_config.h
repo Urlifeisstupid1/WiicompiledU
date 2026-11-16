@@ -154,6 +154,8 @@ inline bool IsSupportedGraphicsApi(std::string_view value) {
     static constexpr std::array<std::string_view, 2> values{"auto", "vulkan"};
 #elif defined(_WIN32)
     static constexpr std::array<std::string_view, 3> values{"auto", "d3d12", "vulkan"};
+#elif defined(__WIIU__)
+    static constexpr std::array<std::string_view, 2> values{"auto", "gx2"};
 #endif
     return std::find(values.begin(), values.end(), value) != values.end();
 }

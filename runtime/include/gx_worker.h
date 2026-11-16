@@ -1,5 +1,6 @@
 #pragma once
 
+#include "platform/mkw_thread_local.h"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -16,8 +17,8 @@ namespace detail {
 inline constexpr size_t kAlign = 16;
 
 extern std::atomic<bool> g_active;
-extern constinit thread_local bool t_onWorker;
-extern constinit thread_local int t_inlineDepth;
+extern MKW_TLS_CONSTINIT MKW_THREAD_LOCAL(bool) t_onWorker;
+extern MKW_TLS_CONSTINIT MKW_THREAD_LOCAL(int) t_inlineDepth;
 extern bool g_fifoPending;
 
 void* Reserve(size_t payloadSize, void (*run)(void*));

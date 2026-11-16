@@ -1,5 +1,6 @@
 #pragma once
 
+#include "platform/mkw_thread_local.h"
 #include <atomic>
 #include <cstdint>
 
@@ -9,7 +10,7 @@ namespace RecompMod {
 // Defined here as `inline thread_local` with a constant initializer, not `extern thread_local`
 // in the .cpp: every indirect dispatch scopes this, so an out-of-line ctor/dtor would cost two
 // un-inlinable calls plus a register spill each for three instructions of work.
-inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
+inline MKW_THREAD_LOCAL(uint32_t) g_currentTranslatedExecutionAddress = 0;
 
 class ScopedTranslatedExecutionAddress {
 public:

@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "hle_stubs.h"
 #include "memory.h"
 #include "abi_bridge.h"
@@ -182,14 +183,14 @@ void SleepPreciselyUntil(Clock::time_point deadline, bool finishWithSpin = false
             }
         }
     };
-    static thread_local HighResolutionTimer timer;
-    if (timer.handle != nullptr) {
+    static MKW_THREAD_LOCAL(HighResolutionTimer) timer;
+    if (MKW_TLS(timer).handle != nullptr) {
         const auto remaining100ns =
             std::chrono::duration_cast<std::chrono::duration<int64_t, std::ratio<1, 10000000>>>(timerDeadline - now);
         LARGE_INTEGER due{};
         due.QuadPart = -std::max<int64_t>(remaining100ns.count(), 1);
-        if (SetWaitableTimerEx(timer.handle, &due, 0, nullptr, nullptr, nullptr, 0) != FALSE) {
-            WaitForSingleObject(timer.handle, INFINITE);
+        if (SetWaitableTimerEx(MKW_TLS(timer).handle, &due, 0, nullptr, nullptr, nullptr, 0) != FALSE) {
+            WaitForSingleObject(MKW_TLS(timer).handle, INFINITE);
             if (!finishWithSpin) {
                 return;
             }

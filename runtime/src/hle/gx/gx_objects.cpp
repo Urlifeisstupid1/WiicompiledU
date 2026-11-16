@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "gx_internal.h"
 #include "runtime_log.h"
 
@@ -111,8 +112,8 @@ bool g_tlutObjBoundsDirty = true;
 // bit positions are decoded inline below.
 
 namespace {
-thread_local uint32_t t_texObjSnapshotAddr = 0;
-thread_local const uint8_t* t_texObjSnapshotBytes = nullptr;
+MKW_THREAD_LOCAL(uint32_t) t_texObjSnapshotAddr = 0;
+MKW_THREAD_LOCAL(const uint8_t*) t_texObjSnapshotBytes = nullptr;
 
 const uint8_t* TexObjSnapshotFor(uint32_t addr) noexcept {
     return (t_texObjSnapshotBytes != nullptr && addr == t_texObjSnapshotAddr) ? t_texObjSnapshotBytes : nullptr;

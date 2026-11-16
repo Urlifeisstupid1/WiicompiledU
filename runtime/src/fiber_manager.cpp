@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "fiber_manager.h"
 #include "memory.h"
 #include "abi_bridge.h"
@@ -22,7 +23,7 @@ std::vector<void*> GuestFiberManager::s_fibersPendingDelete;
 void* GuestFiberManager::s_schedulerFiber = nullptr;
 uint32_t GuestFiberManager::s_currentGuestThread = 0;
 bool GuestFiberManager::s_initialized = false;
-thread_local CpuContext* GuestFiberManager::s_cpuContext = nullptr;
+MKW_THREAD_LOCAL(CpuContext*) GuestFiberManager::s_cpuContext = nullptr;
 
 void GuestFiberManager::PurgePendingFibers() {
     std::vector<void*> toDelete;

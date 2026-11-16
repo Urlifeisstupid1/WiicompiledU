@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "gx_internal.h"
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
@@ -537,7 +538,7 @@ static uint64_t DlScanCacheKey(uint32_t listAddr, uint32_t nbytes, uint64_t layo
 }
 
 static DlScanCacheState& DlScanCache() {
-    static thread_local DlScanCacheState s_cache;
+    static MKW_THREAD_LOCAL(DlScanCacheState) s_cache;
     return s_cache;
 }
 
@@ -560,8 +561,8 @@ static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr,
 
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    const auto it = s_cache.entries.find(key);
-    if (it != s_cache.entries.end()) {
+    const auto it = MKW_TLS(s_cache).entries.find(key);
+    if (it != MKW_TLS(s_cache).entries.end()) {
         auto& record = it->second;
         const auto& entry = record.result;
         const bool identityMatches = entry.listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
@@ -600,15 +601,15 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
                              uint32_t flattenedBytes) {
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    auto old = s_cache.entries.find(key);
-    bool replacing = old != s_cache.entries.end();
+    auto old = MKW_TLS(s_cache).entries.find(key);
+    bool replacing = old != MKW_TLS(s_cache).entries.end();
     size_t replacedBytes = replacing ? DlScanCacheRecordBytes(old->second) : 0;
     const size_t incomingBytes = static_cast<size_t>(flattenedBytes) +
                                  cpWrites.size() * sizeof(DlCpWrite);
-    if ((!replacing && s_cache.entries.size() >= kDlScanCacheMaxEntries) ||
-        s_cache.storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
-        s_cache.entries.clear();
-        s_cache.storedCommandBytes = 0;
+    if ((!replacing && MKW_TLS(s_cache).entries.size() >= kDlScanCacheMaxEntries) ||
+        MKW_TLS(s_cache).storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
+        MKW_TLS(s_cache).entries.clear();
+        MKW_TLS(s_cache).storedCommandBytes = 0;
         replacing = false;
         replacedBytes = 0;
     }
@@ -626,11 +627,11 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
     if (flattened != nullptr && flattenedBytes != 0) {
         record.flattened.assign(flattened, flattened + flattenedBytes);
     }
-    auto [it, inserted] = s_cache.entries.insert_or_assign(key, std::move(record));
+    auto [it, inserted] = MKW_TLS(s_cache).entries.insert_or_assign(key, std::move(record));
     (void)inserted;
-    s_cache.storedCommandBytes += DlScanCacheRecordBytes(it->second);
+    MKW_TLS(s_cache).storedCommandBytes += DlScanCacheRecordBytes(it->second);
     if (replacing) {
-        s_cache.storedCommandBytes -= replacedBytes;
+        MKW_TLS(s_cache).storedCommandBytes -= replacedBytes;
     }
 }
 
@@ -889,11 +890,11 @@ struct DlIndexScanVisitor {
     static constexpr bool kHandlesDraw = true;
 
     static std::array<ScanLayoutCacheEntry, 8>& LayoutCache() {
-        static thread_local std::array<ScanLayoutCacheEntry, 8> cache;
+        static MKW_THREAD_LOCAL(std::array<ScanLayoutCacheEntry, 8>) cache;
         return cache;
     }
     static uint32_t NextLayoutGeneration() {
-        static thread_local uint32_t counter = 0;
+        static MKW_THREAD_LOCAL(uint32_t) counter = 0;
         return ++counter;
     }
 
@@ -1046,7 +1047,7 @@ static bool FlattenDisplayListForAurora(const uint8_t* data, uint32_t nbytes,
 }
 
 static std::vector<uint8_t>& FlattenDisplayListScratch() {
-    static thread_local std::vector<uint8_t> s_scratch;
+    static MKW_THREAD_LOCAL(std::vector<uint8_t>) s_scratch;
     return s_scratch;
 }
 

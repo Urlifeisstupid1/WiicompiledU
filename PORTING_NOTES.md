@@ -194,8 +194,26 @@ Limits: qemu does not model FPSCR[NI] flushing like Espresso, and nothing here h
 - **T2 64-bit atomics:** `src/platform/wiiu/atomic64.c` provides `__atomic_{load,store,exchange,compare_exchange,fetch_*,*_fetch}_8`. It uses 16 address-hashed `OSUninterruptibleSpinLock`s (cross-core safe).
 - **HostContext:** the existing libco branch is enabled for `__WIIU__` (libco `ppc.c`: 32-bit SysV, saves r13-r31/f14-f31; the paired-single halves are not saved, which is fine because the runtime never uses paired singles).
 
-### 6.5 Remaining for Phase 2
-1. Convert the remaining `thread_local`s; add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
+### 6.5 Runtime compile sweep (devkitPPC, `-fsyntax-only`, all 100 runtime sources)
+| Step | Clean files |
+|---|---|
+| Upstream code as-is (C++17) | 23 / 100 |
+| + `gnu++20` (upstream relies on Clang accepting `constinit`, `std::u8string`, `std::rotr` in C++17 mode), `setjmp` instead of `sigsetjmp` on Wii U | 44 / 100 |
+| + all 47 `thread_local`s converted to `MKW_THREAD_LOCAL` (script + 12 use sites with `MKW_TLS`), Wii U graphics-API entry, 32-bit padding in the GX worker command header | **56 / 100** |
+
+Host Clang (x86-64) compiles every runtime file exactly as before these changes. The only failures, `network_ssl.cpp` and `gx_dl.cpp`, are pre-existing: `mbedtls` and `xxhash` are not in this sandbox.
+
+Remaining 44 files, by cause:
+- **SDL3 / aurora headers: 32 files.** aurora's own `aurora/event.h` includes SDL3, and the runtime reaches it through `aurora_events.h` from nearly every GX/VI/input file. See D10.
+- **Networking: 5 files.** `POLL*` constants from `<poll.h>`. Deferred: stubbed in the first Wii U build.
+- **Host-only, excluded from the Wii U build: 7 files.** Flat memory (`guest_flat_memory*.cpp`), Discord, Steam Input layout, the ImGui settings bar and mapping wizard, the friend-code keyboard, and the wiimote host/BT platform files (replaced by KPAD/WPAD in Phase 4).
+
+Other changes made along the way:
+- `wii_es_crypto.h`: on Wii U, a per-call Crypto++ `RandomPool` seeded from OS timers replaces `AutoSeededRandomPool` (there is no OS RNG). It is only used to sign local ES identity data.
+- `ReadAramByte` now looks up its thread-local window once per call; that's a per-byte TLS lookup on the Wii U, to optimise later.
+
+### 6.6 Remaining for Phase 2
+1. D10: Wii U stand-ins for aurora + SDL3 so the 32 remaining files compile; add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
 2. `runtime/CMakeLists.txt`: an `MKW_PLATFORM_WIIU` branch (GCC, 32-bit, no aurora/Dawn/SDL3, stubs for GX/VI/audio/input), with `-Os -mlongcall` for translated shards, cold shards as `wiicold_*` libraries via `WiiUCold.cmake` (D8), and `wut_create_rpx`/`wut_create_wuhb`.
 3. Platform layer: guest RAM from MEM2, SD paths, crash handler, and a log to the SD card and the screen.
 4. Boot test. This needs your own game files. The translator runs on **your PC** against your disc; the .wuhb that comes out contains translated game code, so it is for your own console only and must never be shared.
@@ -226,7 +244,8 @@ The user said "do what you think will work best" (2026-11-15), so the recommenda
 | D6 | Guest MEM2 size | **64 MB** (retail), unless a mod turns out to need upstream's 128 MB. |
 | D7 | Code-size strategy | **`-Os` for translated code**, hot functions at `-O2` within the budget. |
 | D8 | Using more than ~28 MB of code | **Split build:** the RPX holds the runtime and hot translated code (≤ ~28 MB); the remaining translated code is linked at the codegen address, split out into `cold.bin` in the .wuhb content folder, and copied into the codegen area at startup. See §6.3. |
-| D9 | Which cores run translated code (new, forced by hardware) | **Core 1 only** (the codegen core). The guest scheduler thread, which runs every guest fiber, is pinned to core 1. Runtime-only threads (GX worker, AX mixer, I/O) may use cores 0 and 2 but must never call translated code. Upstream already defers guest callbacks (AX resume callbacks, DVD/NAND completions) to the guest thread. Phase 2 adds a debug check on entry to translated dispatch. |
+| D10 | aurora + SDL3 on the Wii U (new, proposed) | **`wiiu/aurora-wiiu/`: a Wii U implementation of the aurora API the runtime uses.** It reuses aurora's Dolphin-SDK headers (`dolphin/gx`, `vi`, `pad`, `mtx`) unchanged and replaces `aurora/event.h`/`aurora.h` with SDL-free versions. Phase 2: no-op GX/VI, null audio, no input, just enough to boot headless. Phase 3 fills the GX side with GX2, Phase 4 adds audio/input. Runtime code that uses SDL directly (SDL gamepads, SDL audio streams, hints, clipboard) is guarded by `MKW_HAS_SDL`, so PC builds are unchanged. Rejected alternative: fake SDL3 headers, which would mean emulating a large API and mislead later work. |
+| D9 | Which cores run translated code (forced by hardware) | **Core 1 only** (the codegen core). The guest scheduler thread, which runs every guest fiber, is pinned to core 1. Runtime-only threads (GX worker, AX mixer, I/O) may use cores 0 and 2 but must never call translated code. Upstream already defers guest callbacks (AX resume callbacks, DVD/NAND completions) to the guest thread. Phase 2 adds a debug check on entry to translated dispatch. |
 
 ## 9. Open problems / risks
 1. **Performance:** Espresso runs at 1.24 GHz with no SIMD beyond paired singles, while upstream asks for a 3.5 GHz x86 CPU. `-Os` code and a checked memory path every access will cost speed. Expect profiling work, selective `-O2`, and possibly native paired-single asm.

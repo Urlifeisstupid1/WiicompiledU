@@ -23,7 +23,12 @@
 #include <cryptopp/eccrypto.h>
 #include <cryptopp/ec2n.h>
 #include <cryptopp/oids.h>
+#if defined(__WIIU__)
+#include <coreinit/time.h>
+#include <cryptopp/randpool.h>
+#else
 #include <cryptopp/osrng.h>
+#endif
 #include <cryptopp/sha.h>
 
 #include <algorithm>
@@ -150,7 +155,25 @@ inline EcSignature SignMessage(const uint8_t* key, const uint8_t* data, size_t s
         throw std::runtime_error("Crypto++ returned an unexpected sect233r1 signature size");
     }
 
+#if defined(__WIIU__)
+    // No OS random source on the Wii U (Crypto++'s AutoSeededRandomPool is unavailable):
+    // a per-call RandomPool seeded from the OS timers. Only used to sign local Wii ES
+    // identity data, so cryptographic-grade nonces are not required here.
+    CryptoPP::RandomPool random;
+    {
+        static uint32_t callCounter = 0;
+        const uint64_t time = static_cast<uint64_t>(OSGetTime());
+        const uint32_t tick = static_cast<uint32_t>(OSGetTick());
+        const uintptr_t stack = reinterpret_cast<uintptr_t>(&time);
+        const uint32_t count = ++callCounter;
+        random.IncorporateEntropy(reinterpret_cast<const CryptoPP::byte*>(&time), sizeof(time));
+        random.IncorporateEntropy(reinterpret_cast<const CryptoPP::byte*>(&tick), sizeof(tick));
+        random.IncorporateEntropy(reinterpret_cast<const CryptoPP::byte*>(&stack), sizeof(stack));
+        random.IncorporateEntropy(reinterpret_cast<const CryptoPP::byte*>(&count), sizeof(count));
+    }
+#else
     thread_local CryptoPP::AutoSeededRandomPool random;
+#endif
     EcSignature signature{};
     const size_t written = signer.SignMessage(random, data, size, signature.data());
     if (written != signature.size()) {

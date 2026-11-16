@@ -1,5 +1,6 @@
 // OSReport formatting/logging.
 
+#include "platform/mkw_thread_local.h"
 #include <cstdint>
 #include <iostream>
 #include <set>
@@ -16,7 +17,7 @@
 // Thread-local cache used to store host-side copies of guest strings so we can
 // safely return const char* pointers that remain valid for the duration of a
 // single OSReport call. OS__Report will clear this each time it's invoked.
-static thread_local std::vector<std::string> g_guest_string_cache;
+static MKW_THREAD_LOCAL(std::vector<std::string>) g_guest_string_cache;
 
 // Forward declaration for the helper used by the formatter.
 static const char* GetGuestString(uint32_t guestAddr);
@@ -107,14 +108,14 @@ static void HLE_LogOSReport(CpuContext* cpu, const char* fmt)
     // nw4r warnings arrive as "<file>:<line> Warning:" plus a bare newline, so
     // consecutive identical messages never land back to back. Blank lines are
     // transparent to the repeat tracker so the pair still collapses.
-    static thread_local std::string lastBuffer;
-    static thread_local size_t repeated = 0;
+    static MKW_THREAD_LOCAL(std::string) lastBuffer;
+    static MKW_THREAD_LOCAL(size_t) repeated = 0;
     const bool blank = buffer.find_first_not_of(" \t\r\n") == std::string::npos;
     if (blank) {
         if (repeated != 0) {
             return;
         }
-    } else if (buffer == lastBuffer) {
+    } else if (buffer == MKW_TLS(lastBuffer)) {
         ++repeated;
         return;
     } else {
@@ -145,9 +146,9 @@ static void HLE_LogOSReport(CpuContext* cpu, const char* fmt)
     if (buffer.find(" Warning:") != std::string::npos ||
         buffer.find(" Panic:") != std::string::npos) {
         constexpr size_t kMaxWarningDumps = 8;
-        static thread_local std::set<std::string> dumpedSites;
-        static thread_local size_t dumpsEmitted = 0;
-        if (dumpsEmitted < kMaxWarningDumps && dumpedSites.insert(buffer).second) {
+        static MKW_THREAD_LOCAL(std::set<std::string>) dumpedSites;
+        static MKW_THREAD_LOCAL(size_t) dumpsEmitted = 0;
+        if (dumpsEmitted < kMaxWarningDumps && MKW_TLS(dumpedSites).insert(buffer).second) {
             ++dumpsEmitted;
             SystemBridge::DumpCpuState(cpu);
             if (dumpsEmitted == kMaxWarningDumps) {
@@ -185,8 +186,8 @@ static const char* GetGuestString(uint32_t guestAddr)
     }
 
     // Push into the thread-local cache and return a stable pointer
-    g_guest_string_cache.push_back(std::move(s));
-    return g_guest_string_cache.back().c_str();
+    MKW_TLS(g_guest_string_cache).push_back(std::move(s));
+    return MKW_TLS(g_guest_string_cache).back().c_str();
 }
 
 // Keep the full CPU context: variadic integer arguments use r4-r10/stack while
@@ -196,7 +197,7 @@ extern "C" void OS__Report_801a25d0(CpuContext* ctx)
     // Clear the thread-local cache of host-side string copies so that each
     // call of OS__Report has fresh buffers and returned const char* values
     // remain valid for the duration of this function.
-    g_guest_string_cache.clear();
+    MKW_TLS(g_guest_string_cache).clear();
 
     const char* fmt_str = GetGuestString(ctx ? ctx->gpr[3] : 0);
     HLE_LogOSReport(ctx, fmt_str);

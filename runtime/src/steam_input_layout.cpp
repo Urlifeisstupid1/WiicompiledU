@@ -1,3 +1,4 @@
+#include "platform/mkw_thread_local.h"
 #include "steam_input_layout.h"
 
 #include "runtime_log.h"
@@ -81,8 +82,8 @@ struct State {
 
 // Never destroyed: the detached worker and late exit paths may still touch it.
 std::atomic<State*> g_state{nullptr};
-thread_local bool t_isWorker = false;
-thread_local bool t_inRelease = false;
+MKW_THREAD_LOCAL(bool) t_isWorker = false;
+MKW_THREAD_LOCAL(bool) t_inRelease = false;
 
 // The worker launches and publishes its request helper under this lock, so an exit that
 // can't wait for the worker can cancel it: either the helper is published, or it never starts.

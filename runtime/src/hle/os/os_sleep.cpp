@@ -1,5 +1,6 @@
 // OSSleepTicks / OSSleepThread parking plus the host-side sleep-timer table.
 
+#include "platform/mkw_thread_local.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -276,8 +277,8 @@ extern "C" void OS__SleepTicks_HLE_801aaca8(CpuContext* ctx)
         const uint32_t sleepCurrentContext = ::Memory::Read32(kOSCurrentContextAddr);
         if (sleepIdleFlag != 0 ||
             (sleepCurrentContext != 0 && sleepCurrentContext != currentThread)) {
-            thread_local std::unordered_set<uint32_t> reportedUnparkableTickSleeps;
-            if (reportedUnparkableTickSleeps.insert(currentThread).second) {
+            static MKW_THREAD_LOCAL(std::unordered_set<uint32_t>) reportedUnparkableTickSleeps;
+            if (MKW_TLS(reportedUnparkableTickSleeps).insert(currentThread).second) {
                 RT_LOG(RT_TAG_OS) << "OSSleepTicks: thread 0x" << std::hex << currentThread
                           << std::dec << " cannot park (scheduler nesting "
                           << sleepIdleFlag << "); busy-returning so the caller retries."
@@ -315,8 +316,8 @@ extern "C" void OS__SleepTicks_HLE_801aaca8(CpuContext* ctx)
                     Fiber::GuestFiberManager::ResumeGuestThread(currentThread);
                 }
             }
-            thread_local std::unordered_set<uint32_t> reportedFailedTickParks;
-            if (reportedFailedTickParks.insert(currentThread).second) {
+            static MKW_THREAD_LOCAL(std::unordered_set<uint32_t>) reportedFailedTickParks;
+            if (MKW_TLS(reportedFailedTickParks).insert(currentThread).second) {
                 RT_LOG(RT_TAG_OS) << "OSSleepTicks: thread 0x" << std::hex << currentThread
                           << std::dec << " failed to switch away while parking; "
                           << "reverted the suspension and busy-returned." << std::endl;
@@ -349,14 +350,14 @@ void ReportUnparkableSleep(uint32_t queuePtr, uint32_t thread)
     // thread_local rather than static: guest scheduling normally runs on one
     // host thread, but this is reachable from the host frame loop too and a
     // diagnostic must not be the thing that introduces a data race.
-    thread_local std::unordered_set<uint32_t> reportedQueues;
-    thread_local uint32_t wedgedQueue = 0;
-    thread_local Clock::time_point wedgedSince{};
-    thread_local bool escalated = false;
+    static MKW_THREAD_LOCAL(std::unordered_set<uint32_t>) reportedQueues;
+    static MKW_THREAD_LOCAL(uint32_t) wedgedQueue = 0;
+    static MKW_THREAD_LOCAL(Clock::time_point) wedgedSince{};
+    static MKW_THREAD_LOCAL(bool) escalated = false;
 
     const uint32_t disableCount = ::Memory::Read32(kSchedulerIdleFlagAddr);
 
-    if (reportedQueues.insert(queuePtr).second) {
+    if (MKW_TLS(reportedQueues).insert(queuePtr).second) {
         RT_LOG(RT_TAG_OS) << "OSSleepThread: thread 0x" << std::hex << thread
                   << " tried to block on wait queue 0x" << queuePtr
                   << std::dec << " but the scheduler could not switch away";
@@ -376,11 +377,11 @@ void ReportUnparkableSleep(uint32_t queuePtr, uint32_t thread)
     }
 
     constexpr auto kWedgeThreshold = std::chrono::seconds(5);
-    if (!escalated && now - wedgedSince >= kWedgeThreshold) {
+    if (!escalated && now - MKW_TLS(wedgedSince) >= kWedgeThreshold) {
         escalated = true;
         RT_LOG(RT_TAG_OS) << "OSSleepThread: wait queue 0x" << std::hex << queuePtr
                   << " has been unsatisfiable for " << std::dec
-                  << std::chrono::duration_cast<std::chrono::seconds>(now - wedgedSince).count()
+                  << std::chrono::duration_cast<std::chrono::seconds>(now - MKW_TLS(wedgedSince)).count()
                   << "s from a non-switchable region. The guest callback that is"
                      " blocking here must not block, or the deferred-callback"
                      " scope around it is wrong." << std::endl;

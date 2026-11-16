@@ -1,5 +1,6 @@
 // OSAlarm queue HLE.
 
+#include "platform/mkw_thread_local.h"
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -27,7 +28,7 @@ namespace {
 //   0x14 = next
 constexpr uint32_t kAlarmPrevOffset = 0x10u;
 constexpr uint32_t kAlarmNextOffset = 0x14u;
-thread_local int g_alarmProcessDepth = 0;
+MKW_THREAD_LOCAL(int) g_alarmProcessDepth = 0;
 
 struct AlarmProcessScope {
     AlarmProcessScope() { ++g_alarmProcessDepth; }
