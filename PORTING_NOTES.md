@@ -40,6 +40,7 @@ cmake --build wiiu/build
 | `tests/overlay/wiiu_overlay_test` round 1 | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | **Loader refused the image: `bad relocation 24`.** Cause: ld rewrites the cold `.eh_frame` but `--emit-relocs` keeps the pre-rewrite offsets, which pointed past the image. Fixed in the split tool (parses CIEs/FDEs itself; bounds-checks every relocation at build time). |
 | `tests/overlay/wiiu_overlay_test` round 2 | Same test with the fixed tool | `RESULT: ALL PASSED` | **All 9 single-core checks pass** (load, both call directions, small data, bss, rodata, jump table, function-pointer table, libc, exceptions both ways through cold frames). **Froze in the all-cores check before logging core 0.** |
 | `tests/overlay/wiiu_overlay_test` round 3 | Per core (1, 0, 2): RPX control, then cold code; ISI/DSI handler records the fault; 3 s timeout | Shows whether cold code is executable only on the codegen core (1) | **All single-core checks pass again. RPX code runs on cores 0, 1, 2. Cold code runs on core 1 only; cores 0 and 2 take an ISI at `0x01800064`.** → D9. The test now treats that as the expected result. |
+| `tests/primitives/wiiu_primitives_test` (new) | `MKW_THREAD_LOCAL` (int, `std::string`, array) on 3 cores at once; 64-bit atomic shim under 3-core contention (`uint64_t` fetch_add touching both halves, `double` CAS loop); runtime `HostContext` fibers on the codegen core (4 contexts x 5000 switches), calling cold-overlay code and keeping FP/integer state across switches | `RESULT: ALL PASSED`; log `wiicompiled_primitives.txt` | Not tested yet |
 
 ## 3. Audit findings — blockers found by building
 
@@ -184,13 +185,20 @@ Limits: qemu does not model FPSCR[NI] flushing like Espresso, and nothing here h
   - Registers the cold `.eh_frame` with `__register_frame_info`, so C++ exceptions can unwind through cold frames.
 - **Costs:** `-mlongcall` makes every call 4 instructions instead of 1. Calls between regions are absolute. The PC needs Python 3 for the build (devkitPro's MSYS2 shell: `pacman -S python`).
 
-### 6.4 Remaining for Phase 2
-1. T1 `thread_local` → `MKW_THREAD_LOCAL` (OS thread-specific storage).
-2. T2 libatomic shim.
-3. `HostContext` Wii U backend on libco `ppc.c`.
-4. `runtime/CMakeLists.txt`: an `MKW_PLATFORM_WIIU` branch (GCC, 32-bit, no aurora/Dawn/SDL3, stubs for GX/VI/audio/input), with `-Os` for translated shards and `wut_create_rpx`/`wut_create_wuhb`.
-5. Platform layer: guest RAM from MEM2, SD paths, crash handler, and a log to the SD card and the screen.
-6. Boot test. This needs your own game files. The translator runs on **your PC** against your disc; the .wuhb that comes out contains translated game code, so it is for your own console only and must never be shared.
+### 6.4 Runtime primitives (done, awaiting the hardware test)
+- **T1 `thread_local`:** `include/platform/mkw_thread_local.h` + `src/platform/wiiu/mkw_thread_local.cpp`.
+  - `MKW_THREAD_LOCAL(T)` is plain `thread_local T` off the Wii U.
+  - On the Wii U it is `MkwThreadLocal<T>`: each OS thread gets a lazily allocated 64 KB arena (OS thread-specific slot 13), each variable owns a slot in it, and each thread's copy is initialised from the prototype on first touch.
+  - Operators are forwarded. `MKW_TLS(x)` gives member access (`x` elsewhere, `x.get()` on the Wii U). `MKW_TLS_CONSTINIT` replaces `constinit`. Arrays need a type alias.
+  - Applied so far to `host_context.cpp` only. The other ~45 variables are converted while bringing up the runtime build.
+- **T2 64-bit atomics:** `src/platform/wiiu/atomic64.c` provides `__atomic_{load,store,exchange,compare_exchange,fetch_*,*_fetch}_8`. It uses 16 address-hashed `OSUninterruptibleSpinLock`s (cross-core safe).
+- **HostContext:** the existing libco branch is enabled for `__WIIU__` (libco `ppc.c`: 32-bit SysV, saves r13-r31/f14-f31; the paired-single halves are not saved, which is fine because the runtime never uses paired singles).
+
+### 6.5 Remaining for Phase 2
+1. Convert the remaining `thread_local`s; add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
+2. `runtime/CMakeLists.txt`: an `MKW_PLATFORM_WIIU` branch (GCC, 32-bit, no aurora/Dawn/SDL3, stubs for GX/VI/audio/input), with `-Os -mlongcall` for translated shards, cold shards as `wiicold_*` libraries via `WiiUCold.cmake` (D8), and `wut_create_rpx`/`wut_create_wuhb`.
+3. Platform layer: guest RAM from MEM2, SD paths, crash handler, and a log to the SD card and the screen.
+4. Boot test. This needs your own game files. The translator runs on **your PC** against your disc; the .wuhb that comes out contains translated game code, so it is for your own console only and must never be shared.
 
 ## 7. Size estimate (now measured on PPC)
 

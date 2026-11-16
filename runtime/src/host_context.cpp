@@ -14,8 +14,10 @@
 
 extern "C" void mkw_co_switch(void** targetSp, void** sourceSp);
 extern "C" void* mkw_co_init(void* stackTop, void (*entry)(void*), void* argument);
-#elif defined(__linux__) || (defined(__APPLE__) && defined(__x86_64__))
+#elif defined(__linux__) || defined(__WIIU__) || (defined(__APPLE__) && defined(__x86_64__))
 #include <libco.h>
+
+#include "platform/mkw_thread_local.h"
 
 #include <cstdlib>
 #include <unordered_map>
@@ -158,7 +160,7 @@ void Switch(Handle target)
     g_current = source;
 }
 
-#elif defined(__linux__) || (defined(__APPLE__) && defined(__x86_64__))
+#elif defined(__linux__) || defined(__WIIU__) || (defined(__APPLE__) && defined(__x86_64__))
 
 namespace {
 struct Context {
@@ -168,13 +170,17 @@ struct Context {
     bool ownsNative = false;
 };
 
-thread_local Context* g_current = nullptr;
-thread_local std::unordered_map<cothread_t, Context*> g_contexts;
+// Wii U: libco's PowerPC backend (third_party/libco/ppc.c) covers 32-bit SysV PPC.
+// It saves r13-r31 and f14-f31; the paired-single halves of the FPRs are not
+// saved, which is fine because the runtime is compiled without paired-single use.
+MKW_THREAD_LOCAL(Context*) g_current = nullptr;
+using ContextMap = std::unordered_map<cothread_t, Context*>;
+MKW_THREAD_LOCAL(ContextMap) g_contexts;
 
 void ContextEntry()
 {
-    const auto found = g_contexts.find(co_active());
-    if (found == g_contexts.end() || !found->second || !found->second->entry) {
+    const auto found = MKW_TLS(g_contexts).find(co_active());
+    if (found == MKW_TLS(g_contexts).end() || !found->second || !found->second->entry) {
         std::abort();
     }
 
@@ -198,7 +204,7 @@ bool InitializeScheduler(Handle* scheduler)
     }
 
     g_current = context;
-    g_contexts.emplace(context->native, context);
+    MKW_TLS(g_contexts).emplace(context->native, context);
     *scheduler = context;
     return true;
 }
@@ -210,7 +216,7 @@ void ShutdownScheduler(Handle scheduler)
         return;
     }
 
-    g_contexts.erase(context->native);
+    MKW_TLS(g_contexts).erase(context->native);
     if (g_current == context) {
         g_current = nullptr;
     }
@@ -229,7 +235,7 @@ Handle Create(std::size_t stackSize, Entry entry, void* argument)
         return nullptr;
     }
 
-    g_contexts.emplace(context->native, context);
+    MKW_TLS(g_contexts).emplace(context->native, context);
     return context;
 }
 
@@ -240,7 +246,7 @@ void Destroy(Handle context)
         return;
     }
 
-    g_contexts.erase(nativeContext->native);
+    MKW_TLS(g_contexts).erase(nativeContext->native);
     if (nativeContext->ownsNative) {
         co_delete(nativeContext->native);
     }
