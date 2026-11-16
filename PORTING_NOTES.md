@@ -10,7 +10,7 @@ Last updated: 2026-11-15 · Repo: `Urlifeisstupid1/WiicompiledU`, branch `wiiu-p
 |---|---|
 | 0 – Toolchain | Done. hello and stdtest **confirmed working on hardware** (user). |
 | 1 – Audit | Done. All decisions made (§8). |
-| 2 – Headless core | **In progress.** ISA headers, memory model and endianness are done (§6). Remaining: `thread_local`, 64-bit atomics, fibers, CMake platform, SD logging, boot. |
+| 2 – Headless core | **In progress.** The whole runtime builds and links for the Wii U through CMake (§6.7); a runtime smoke test `.wuhb` is waiting for its hardware run. Remaining: the first boot with your translated game. |
 | 3 – GX2 graphics | Not started. |
 | 4 – Audio, input, storage | Not started. |
 
@@ -40,6 +40,7 @@ cmake --build wiiu/build
 | `tests/overlay/wiiu_overlay_test` round 1 | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | **Loader refused the image: `bad relocation 24`.** Cause: ld rewrites the cold `.eh_frame` but `--emit-relocs` keeps the pre-rewrite offsets, which pointed past the image. Fixed in the split tool (parses CIEs/FDEs itself; bounds-checks every relocation at build time). |
 | `tests/overlay/wiiu_overlay_test` round 2 | Same test with the fixed tool | `RESULT: ALL PASSED` | **All 9 single-core checks pass** (load, both call directions, small data, bss, rodata, jump table, function-pointer table, libc, exceptions both ways through cold frames). **Froze in the all-cores check before logging core 0.** |
 | `tests/overlay/wiiu_overlay_test` round 3 | Per core (1, 0, 2): RPX control, then cold code; ISI/DSI handler records the fault; 3 s timeout | Shows whether cold code is executable only on the codegen core (1) | **All single-core checks pass again. RPX code runs on cores 0, 1, 2. Cold code runs on core 1 only; cores 0 and 2 take an ISI at `0x01800064`.** → D9. The test now treats that as the expected result. |
+| `wiiu_runtime_smoke` (new, built by `runtime/` CMake, §6.7) | Upstream's real `RuntimeMain` with no game code: startup on core 1, SD + screen log, Config.toml defaults, guest RAM (MEM1 + 128 MB MEM2 + overlay), system bridge, aurora-wiiu, GX worker thread, then the normal error path | Log reaches `No translated function registered at address 0x...`, then `The runtime stopped with an error`, waits for HOME; `sd:/WiiCompiled/Logs/console.log` exists | Not tested yet |
 | `tests/primitives/wiiu_primitives_test` (new) | `MKW_THREAD_LOCAL` (int, `std::string`, array) on 3 cores at once; 64-bit atomic shim under 3-core contention (`uint64_t` fetch_add touching both halves, `double` CAS loop); runtime `HostContext` fibers on the codegen core (4 contexts x 5000 switches), calling cold-overlay code and keeping FP/integer state across switches | `RESULT: ALL PASSED`; log `wiicompiled_primitives.txt` | **Round 1: thread-locals isolated on all 3 cores; 64-bit atomics exact under contention (80 ms); 20,000 fiber switches on core 1 in 4.9 ms with `IsCurrent` always right; fiber 0's FP/integer state exact. Fibers 1 and 2 reported 0 because of a test bug (a finished fiber returned to the scheduler instead of handing over to the next fiber).** Round 2 (fixed test): **ALL PASSED** (user). |
 
 ## 3. Audit findings — blockers found by building
@@ -230,15 +231,62 @@ Other changes made along the way:
   - No pipe transcript.
   - The fatal popup goes to the log.
   - Graphics-API table: `auto`/`gx2`.
-- **Paths:** `RuntimePlatform::ApplicationDataDirectory` = `sd:/WiiCompiled` (Config.toml, DATA/, NAND/, Logs/). There is no executable directory, so portable-install detection is skipped.
+- **Paths:**
+  - `RuntimePlatform::ApplicationDataDirectory` = `sd:/WiiCompiled` (Config.toml, DATA/, NAND/, Logs/).
+  - `ExecutableDirectory()` = `fs:/vol/content` (the `.wuhb` content folder), so bundled assets (`dsp_coef.bin`, `wii_bootstrap/`) are found "next to the executable" with no other code changes.
 - **Excluded from the Wii U build:**
   - `audio_backend.cpp`, `input_bindings.cpp`, `motion_trick.cpp`
   - flat memory, Discord, Steam Input, ImGui overlay/wizard, friend-code keyboard
   - wiimote host/BT platform (KPAD/WPAD in Phase 4)
   - `hle/net/*` (stubbed until online play)
 
-### 6.7 Remaining for Phase 2
-1. aurora-wiiu stub library: no-op implementations of the `aurora_*`, `GX*`, `VI*`, `PAD*` functions the runtime links against; network HLE stubs; then a full link. Add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
+### 6.7 Wii U build (`runtime/cmake/WiiU.cmake`)
+`runtime/CMakeLists.txt` switches to it when the devkitPro Wii U toolchain is used, so the PC build paths are untouched.
+
+```
+git submodule update --init aurora-main          # only its include/ directory is used
+export DEVKITPRO=/opt/devkitpro DEVKITPPC=$DEVKITPRO/devkitPPC
+cmake -S runtime -B build-wiiu -DCMAKE_TOOLCHAIN_FILE=$DEVKITPRO/cmake/WiiU.cmake
+cmake --build build-wiiu
+```
+
+**Libraries:**
+- `mkw_wiiu_runtime`: the runtime at `-O2 -ffast-math`. The PPC-semantics files use `-fno-fast-math -ffp-contract=off` as upstream does, and `ax_effects.cpp` gets `-ffp-contract=off` because GCC ignores its Clang pragma.
+- `mkw_wiiu_aurora`: aurora-wiiu.
+- `mkw_wiiu_cryptopp`: vendored Crypto++ with `NO_OS_DEPENDENCE`; all 150 files build.
+- `mkw_wiiu_thirdparty`: pugixml, libco, and xxHash v0.8.4, fetched with the same hash aurora pins.
+
+**Products, `mkw_wiiu_add_product()`:**
+- Links the runtime whole-archive (HLE overrides register from static constructors).
+- Puts translated `wiicold_*` libraries into the codegen area (D8).
+- Strips `.note.GNU-stack` (the translator's blob assembly declares it; elf2rpl rejects it).
+- Bundles `dsp_coef.bin` and `wii_bootstrap/` in the `.wuhb` content folder.
+
+**Products built:**
+- **`WiiCompiled`:** built when `generated/build_shards/shards.cmake` exists. The shared base shards go to the codegen area; the registration and sensitive shards stay in the RPX. Retro Rewind is not built for the Wii U yet.
+- **`wiiu_runtime_smoke`:** always built. It uses `wiiu/tests/runtime-smoke/generated/` (empty data-init and the PAL SDA constants), so it contains no game code.
+
+**aurora-wiiu (Phase 2):**
+- `wiiu/tools/gen_aurora_stubs.py` generates the 147 void entry points from aurora's headers (`wiiu/aurora-wiiu/stub_symbols.txt`). Only getters zero their out-parameters; other functions never touch pointer arguments, which may point into guest memory.
+- `aurora_wiiu.cpp` holds the value-returning ones:
+  - `aurora_initialize` reports success.
+  - `aurora_update` returns an empty event list.
+  - `GXInit`/`GXGetCPUFifo` return a valid FIFO object.
+  - `GXGetTexBufferSize` is ported from aurora (MIT).
+  - `PADRead` reports no controllers.
+
+**Other pieces:**
+- `src/platform/wiiu/guest_flat_memory_wiiu.cpp`: `GuestFlat` on the Wii U only owns the guest RAM backing. The physical/cached/uncached views of MEM1 and MEM2 alias one heap buffer each, as on PC. There are no protections; everything goes through the checked path (D1).
+- `src/platform/wiiu/host_feature_stubs.cpp`: no-op Discord / Steam Input / settings bar / friend-code keyboard. A Wiimote `RemoteHost` with no remotes (Phase 4 implements it on WPAD). The network HLE says "not a network device".
+- toml11's parser caches are `static thread_local`. A marked change makes them plain statics on the Wii U only (config is parsed on the main thread).
+- `main()` on the Wii U shows the outcome and waits for HOME instead of returning into Aroma.
+
+**Sizes (smoke test, no game code):** RPX text 2.9 MB, data 2.0 MB. That leaves about 25 MB of RPX code space plus the 32 MiB codegen area for translated code.
+
+### 6.8 Remaining for Phase 2
+1. Hardware run of `wiiu_runtime_smoke`.
+2. Add the D9 check (translated dispatch asserts it runs on the codegen core in debug builds).
+3. First boot with your translation: run the translator on your PC (as for the PC build), then build `runtime/` with the Wii U toolchain. Instructions to follow once the smoke test passes.
 2. `runtime/CMakeLists.txt`: an `MKW_PLATFORM_WIIU` branch (GCC, 32-bit, no aurora/Dawn/SDL3, stubs for GX/VI/audio/input), with `-Os -mlongcall` for translated shards, cold shards as `wiicold_*` libraries via `WiiUCold.cmake` (D8), and `wut_create_rpx`/`wut_create_wuhb`.
 3. Platform layer: guest RAM from MEM2, SD paths, crash handler, and a log to the SD card and the screen.
 4. Boot test. This needs your own game files. The translator runs on **your PC** against your disc; the .wuhb that comes out contains translated game code, so it is for your own console only and must never be shared.
@@ -266,7 +314,7 @@ The user said "do what you think will work best" (2026-11-15), so the recommenda
 | D3 | Paired-single / FP | **Portable scalar fallback** **[done]**; Espresso inline-asm paired singles as a later optimisation. |
 | D4 | Where the port lives | Fork `Urlifeisstupid1/WiicompiledU`, branch `wiiu-port`. |
 | D5 | GX2 shader strategy | Decide at Phase 3; leaning toward a precompiled TEV uber-shader. |
-| D6 | Guest MEM2 size | **64 MB** (retail), unless a mod turns out to need upstream's 128 MB. |
+| D6 | Guest MEM2 size | **128 MB, as upstream** (revised). Upstream gives MEM2 the dev-kit size on purpose: Mario Kart Wii detects it and creates its debug expansion heap. The Wii U has the memory, so the port keeps upstream's behaviour. |
 | D7 | Code-size strategy | **`-Os` for translated code**, hot functions at `-O2` within the budget. |
 | D8 | Using more than ~28 MB of code | **Split build:** the RPX holds the runtime and hot translated code (≤ ~28 MB); the remaining translated code is linked at the codegen address, split out into `cold.bin` in the .wuhb content folder, and copied into the codegen area at startup. See §6.3. |
 | D10 | aurora + SDL3 on the Wii U (new, proposed) | **`wiiu/aurora-wiiu/`: a Wii U implementation of the aurora API the runtime uses.** It reuses aurora's Dolphin-SDK headers (`dolphin/gx`, `vi`, `pad`, `mtx`) unchanged and replaces `aurora/event.h`/`aurora.h` with SDL-free versions. Phase 2: no-op GX/VI, null audio, no input, just enough to boot headless. Phase 3 fills the GX side with GX2, Phase 4 adds audio/input. Runtime code that uses SDL directly (SDL gamepads, SDL audio streams, hints, clipboard) is guarded by `MKW_HAS_SDL`, so PC builds are unchanged. Rejected alternative: fake SDL3 headers, which would mean emulating a large API and mislead later work. |

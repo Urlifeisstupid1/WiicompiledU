@@ -64,7 +64,8 @@
 #include "abi_bridge.h"
 
 #if defined(__WIIU__) && !defined(MKW_WIIU_COLD_IMAGE_PATH)
-// The cold-code image inside the .wuhb (D8); "" for a build without one.
+// The cold-code image inside the .wuhb (D8). Loaded when present; a product
+// without codegen-area code (e.g. the runtime smoke test) simply has none.
 #define MKW_WIIU_COLD_IMAGE_PATH "fs:/vol/content/cold.bin"
 #endif
 #include "audio_backend.h"
@@ -1641,6 +1642,18 @@ int RuntimeMain(int argc, char** argv) {
 }
 
 int main(int argc, char** argv) {
+#if defined(__WIIU__)
+    // Under Aroma the app must stay in the ProcUI loop until the user leaves with
+    // HOME; returning from main early does not exit cleanly. Show the outcome and
+    // wait instead.
+    const int code = RuntimeMain(argc, argv);
+    WiiuPlatform::WaitForExit(code == 0
+        ? "The game exited."
+        : "The runtime stopped with an error. Details: sd:/WiiCompiled/Logs/console.log");
+    WiiuPlatform::Shutdown();
+    return code;
+#else
     return RuntimeMain(argc, argv);
+#endif
 }
 extern "C" bool g_dynamicAspectRatioEnabled = false;

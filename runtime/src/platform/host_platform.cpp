@@ -51,6 +51,10 @@ std::optional<std::filesystem::path> ExecutableDirectory() noexcept {
     std::error_code ec;
     const auto resolved = std::filesystem::weakly_canonical(path, ec);
     return (ec ? std::filesystem::path(path) : resolved).parent_path();
+#elif defined(__WIIU__)
+    // The RPX lives inside the .wuhb; its content folder plays the role of "next to
+    // the executable" for bundled assets (dsp_coef.bin, wii_bootstrap/).
+    return std::filesystem::path("fs:/vol/content");
 #elif defined(__linux__)
     std::vector<char> buffer(256);
     for (;;) {

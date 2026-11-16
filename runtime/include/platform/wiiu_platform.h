@@ -18,7 +18,7 @@ std::filesystem::path DataRoot();
 //      guest fiber, and code in the codegen area only executes there.
 //   3. Creates DataRoot()/Logs and routes stdout/stderr to Logs/console.log
 //      (previous run kept as console.prev.log) and to the screen.
-//   4. Loads the cold-code image (D8) when the product has one.
+//   4. Loads the cold-code image (D8) when it exists at `coldImagePath`.
 // Never returns on failure: it shows the reason on screen and waits for HOME.
 void Startup(const char* coldImagePath);
 
@@ -38,7 +38,11 @@ using FaultReporter = void (*)(const Fault& fault);
 // the exception has been left (so it may write files); the process then stops.
 void InstallFaultHandler(FaultReporter reporter);
 
-// Shows `message` on screen, keeps the log, and waits for HOME (never returns).
+// Shows `message` on screen, keeps the log, and returns once the user pressed HOME.
+void WaitForExit(const char* message);
+
+// WaitForExit, then Shutdown and terminate immediately (never returns). Used from
+// fault and fatal paths, where running static destructors would be unsafe.
 [[noreturn]] void FatalScreen(const char* message);
 
 // Runs ProcUI message processing. Returns false once the user chose to exit.

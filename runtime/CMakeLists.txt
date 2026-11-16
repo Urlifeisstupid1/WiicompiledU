@@ -10,6 +10,13 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 project(mkw_recompiled)
 
+# Wii U (devkitPro's WiiU.cmake toolchain): a separate, self-contained build of the
+# runtime and products. See cmake/WiiU.cmake and PORTING_NOTES.md.
+if(CMAKE_SYSTEM_NAME STREQUAL "CafeOS")
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/WiiU.cmake")
+    return()
+endif()
+
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "WiiCompiled requires a 64-bit Clang toolchain")
 endif()

@@ -154,7 +154,12 @@ void Startup(const char* coldImagePath)
     std::printf("[wiiu] data root %s, main thread on core %lu\n", DataRoot().c_str(),
                 static_cast<unsigned long>(OSGetCoreId()));
 
-    if (coldImagePath != nullptr && coldImagePath[0] != '\0') {
+    std::error_code existsError;
+    if (coldImagePath != nullptr && coldImagePath[0] != '\0' &&
+        !std::filesystem::exists(coldImagePath, existsError)) {
+        std::printf("[wiiu] no cold-code image at %s (expected only for builds without translated "
+                    "code in the codegen area)\n", coldImagePath);
+    } else if (coldImagePath != nullptr && coldImagePath[0] != '\0') {
         char error[256] = "";
         if (WiiColdLoad(coldImagePath, error, sizeof(error)) != 0) {
             std::string message = std::string("WiiCompiled: could not load the cold-code image ") +
@@ -174,9 +179,9 @@ void InstallFaultHandler(FaultReporter reporter)
     OSSetExceptionCallbackEx(OS_EXCEPTION_MODE_GLOBAL_ALL_CORES, OS_EXCEPTION_TYPE_ALIGNMENT, OnAlignment);
 }
 
-void FatalScreen(const char* message)
+void WaitForExit(const char* message)
 {
-    std::fprintf(stderr, "\n[wiiu] FATAL: %s\n", message);
+    std::fprintf(stderr, "\n[wiiu] %s\n", message);
     if (g_logFile)
         std::fflush(g_logFile);
     WHBLogPrint("");
@@ -184,6 +189,12 @@ void FatalScreen(const char* message)
     DrawConsoleThrottled(true);
     while (WHBProcIsRunning())
         OSSleepTicks(OSMillisecondsToTicks(100));
+}
+
+void FatalScreen(const char* message)
+{
+    std::string text = std::string("FATAL: ") + message;
+    WaitForExit(text.c_str());
     Shutdown();
     std::_Exit(1);
 }

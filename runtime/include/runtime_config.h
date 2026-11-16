@@ -188,8 +188,8 @@ inline std::optional<std::filesystem::path> ExecutableDirectory() {
         buffer.resize(buffer.size() * 2);
     }
 #elif defined(__APPLE__) || defined(__WIIU__)
-    // Wii U: there is no executable directory (the RPX is inside the .wuhb), so
-    // RuntimePlatform reports none and portable-install detection is skipped.
+    // Wii U: RuntimePlatform reports the .wuhb content folder (fs:/vol/content),
+    // which holds the bundled assets; it never contains the portable marker.
     return RuntimePlatform::ExecutableDirectory();
 #else
     // /proc/self/exe is a Linux-specific magic symlink to the running executable; readlink()
