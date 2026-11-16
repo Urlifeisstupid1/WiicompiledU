@@ -37,7 +37,8 @@ cmake --build wiiu/build
 | `tests/bigtext` 32 MB, random-filled | Is the hang caused by the compression ratio? | `far_fn(4) = 13` | **Stuck**: it is the size, not compression |
 | `tests/codegen/wiiu_codegen_probe` round 1 | Is Aroma's 32 MiB codegen (JIT) area usable as overflow space for code? | Area info, sled returns 7, codegen→RPX call returns 141 | **Area at `0x01800000`, 32 MiB, core 1. RPX code loads at `0x0C000000`. `OSCodegenCopy` refused (even 48 bytes).** |
 | `tests/codegen/wiiu_codegen_probe` round 2 | Tries `OSCodegenCopy` at other sizes/offsets and the `OSSwitchSecCodeGenMode` RW→memcpy→RX route | `RESULT: codegen area usable…` | **`OSCodegenCopy` refused at every size; `OSSwitchSecCodeGenMode` RW → memcpy → RX works. Codegen→RPX call returned 141; the full 32 MiB nop sled ran (fill 313 ms, run 145 ms).** |
-| `tests/overlay/wiiu_overlay_test` (new) | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | Not tested yet |
+| `tests/overlay/wiiu_overlay_test` round 1 | End-to-end cold-overlay split (D8): RPX↔cold calls, data, small data, bss, rodata, jump table, function-pointer table, libc call, C++ exceptions through cold frames, cold code on all 3 cores | `RESULT: ALL PASSED`; log on SD (`wiicompiled_overlay.txt`) | **Loader refused the image: `bad relocation 24`.** Cause: ld rewrites the cold `.eh_frame` but `--emit-relocs` keeps the pre-rewrite offsets, which pointed past the image. Fixed in the split tool (parses CIEs/FDEs itself; bounds-checks every relocation at build time). |
+| `tests/overlay/wiiu_overlay_test` round 2 | Same test with the fixed tool | `RESULT: ALL PASSED` | Not tested yet |
 
 ## 3. Audit findings — blockers found by building
 
@@ -173,6 +174,7 @@ Limits: qemu does not model FPSCR[NI] flushing like Espresso, and nothing here h
 - **Split** (`wiiu/tools/wiiu_cold_split.py`, Python 3, run after linking and before elf2rpl):
   - Writes `.wiicold` to `cold.bin`, with every relocation from cold code into RPX sections.
   - Drops relocations that point into the cold region, since cold code never moves.
+  - The cold `.eh_frame` is parsed directly (CIE personality, FDE pc_begin, LSDA) instead of trusting ld's emitted relocations, whose offsets are stale after ld rewrites `.eh_frame`. Every relocation is bounds-checked against the image at build time.
   - **Fails the build** on any PC-relative reference crossing the two regions. Cold code and its callers are compiled with `-mlongcall`.
   - Removes the section with objcopy.
 - **Load** (`wiiu/common/wiicold_loader.c`, `WiiColdLoad`):

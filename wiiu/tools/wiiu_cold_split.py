@@ -23,6 +23,13 @@
 #   4. Removes `.wiicold` and `.rela.wiicold` (via objcopy) so elf2rpl never sees
 #      them.
 #
+# The cold .eh_frame is NOT fixed up from the emitted relocations: ld rewrites
+# .eh_frame (merging duplicate CIEs) but --emit-relocs keeps the offsets from
+# before that rewrite, so they point at the wrong bytes (found on hardware:
+# relocations past the end of the image). Instead the tool parses the CIEs/FDEs
+# in the final image and records the absolute pointers (personality routine,
+# LSDA) that refer to RPX sections.
+#
 # Image format (all big-endian):
 #   header  : magic 'WCLD', version, link_base, image_size, code_size,
 #             eh_frame_offset, eh_frame_size, anchor_count, reloc_count
@@ -131,6 +138,118 @@ def section_containing(sections, address):
     return None
 
 
+DW_EH_PE_omit = 0xFF
+
+
+def read_uleb(buf, pos):
+    result = shift = 0
+    while True:
+        byte = buf[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return result, pos
+
+
+def read_sleb(buf, pos):
+    result = shift = 0
+    while True:
+        byte = buf[pos]
+        pos += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            if byte & 0x40:
+                result -= 1 << shift
+            return result, pos
+
+
+def read_encoded(buf, pos, encoding, field_address):
+    """Returns (value, size, is_absolute) for a 4-byte DW_EH_PE pointer."""
+    fmt = encoding & 0x0F
+    app = encoding & 0x70
+    if encoding & 0x80:
+        raise SplitError('indirect eh_frame pointer encoding 0x%02X is not supported' % encoding)
+    if fmt not in (0x00, 0x03, 0x0B):
+        raise SplitError('eh_frame pointer encoding 0x%02X is not supported' % encoding)
+    (raw,) = struct.unpack_from('>i' if fmt == 0x0B else '>I', buf, pos)
+    if app == 0x00:
+        return raw & 0xFFFFFFFF, 4, True
+    if app == 0x10:
+        return (field_address + raw) & 0xFFFFFFFF, 4, False
+    raise SplitError('eh_frame pointer application 0x%02X is not supported' % app)
+
+
+def scan_eh_frame(image, base, start, end):
+    """Yields (offset_in_image, target_address, is_absolute) for every pointer field
+    (personality, FDE pc_begin, LSDA) in the eh_frame bytes image[start:end]."""
+    cies = {}
+    pos = start
+    while pos + 4 <= end:
+        (length,) = struct.unpack_from('>I', image, pos)
+        if length == 0:
+            break
+        if length == 0xFFFFFFFF:
+            raise SplitError('64-bit eh_frame entries are not supported')
+        body = pos + 4
+        next_pos = body + length
+        (cie_id,) = struct.unpack_from('>I', image, body)
+        if cie_id == 0:
+            q = body + 4
+            version = image[q]
+            q += 1
+            aug_end = image.index(b'\0', q)
+            aug = image[q:aug_end].decode('ascii')
+            q = aug_end + 1
+            _, q = read_uleb(image, q)  # code alignment
+            _, q = read_sleb(image, q)  # data alignment
+            if version == 1:
+                q += 1
+            else:
+                _, q = read_uleb(image, q)
+            info = {'aug': aug, 'fde_enc': 0x00, 'lsda_enc': DW_EH_PE_omit}
+            if aug.startswith('z'):
+                _, q = read_uleb(image, q)
+                for ch in aug[1:]:
+                    if ch == 'P':
+                        enc = image[q]
+                        q += 1
+                        value, size, absolute = read_encoded(image, q, enc, base + q)
+                        yield q, value, absolute
+                        q += size
+                    elif ch == 'L':
+                        info['lsda_enc'] = image[q]
+                        q += 1
+                    elif ch == 'R':
+                        info['fde_enc'] = image[q]
+                        q += 1
+                    elif ch in 'SB':
+                        pass
+                    else:
+                        raise SplitError('unknown CIE augmentation %r' % aug)
+            elif aug:
+                raise SplitError('unsupported CIE augmentation %r' % aug)
+            cies[pos] = info
+        else:
+            cie_pos = body - cie_id
+            if cie_pos not in cies:
+                raise SplitError('FDE at cold+0x%X refers to an unknown CIE' % pos)
+            info = cies[cie_pos]
+            q = body + 4
+            value, size, absolute = read_encoded(image, q, info['fde_enc'], base + q)
+            yield q, value, absolute
+            q += size
+            q += 4  # pc_range (same size, never relocated)
+            if info['aug'].startswith('z'):
+                _, q = read_uleb(image, q)
+                if 'L' in info['aug'] and info['lsda_enc'] != DW_EH_PE_omit:
+                    value, size, absolute = read_encoded(image, q, info['lsda_enc'], base + q)
+                    if value != 0 or not absolute:
+                        yield q, value, absolute
+        pos = next_pos
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf', help='linked ELF; rewritten in place without .wiicold')
@@ -198,7 +317,11 @@ def main():
             name, s_value, s_shndx, _ = symbols[r_sym]
             s_in_cold = s_shndx == cold.index
             if target.index == cold.index:
-                # Relocation inside the cold image.
+                # Relocation inside the cold image. Those at or past the start of the
+                # cold .eh_frame have stale offsets (see header) and are replaced by
+                # scan_eh_frame() below.
+                if eh and r_offset >= eh[0]:
+                    continue
                 if r_type == R_PPC_NONE or s_shndx in (cold.index, SHN_ABS) or r_type in SDA_TYPES:
                     continue  # final already: cold never moves / SDA offsets are invariant
                 if s_shndx == SHN_UNDEF:
@@ -236,6 +359,31 @@ def main():
                 struct.pack_into('>IIi', data, rela.offset + i * 12, *entry)
             struct.pack_into('>I', data, rela.header_offset + 0x14, len(kept) * 12)
 
+    image = bytes(data[cold.offset:cold.offset + cold.size]) if cold.type != SHT_NOBITS else bytes(cold.size)
+
+    if eh_size:
+        for offset, value, absolute in scan_eh_frame(image, cold_start, eh_offset, eh_offset + eh_size):
+            in_cold = cold_start <= value < cold_end
+            if in_cold:
+                continue  # PC-relative or absolute reference to fixed cold code: final
+            if not absolute:
+                errors.append('cold eh_frame+0x%X: PC-relative pointer to 0x%08X outside the cold region'
+                              % (offset - eh_offset, value))
+                continue
+            owner = section_containing(sections, value)
+            anchor = anchor_of_section.get(owner.index) if owner else None
+            if anchor is None:
+                errors.append('cold eh_frame+0x%X: pointer to 0x%08X in %s, which has no anchor'
+                              % (offset - eh_offset, value, owner.name if owner else 'no section'))
+                continue
+            image_relocs.append((offset, R_PPC_ADDR32, anchor, value))
+
+    for offset, r_type, _anchor, _value in image_relocs:
+        width = 4 if r_type == R_PPC_ADDR32 else 2
+        if offset + width > len(image):
+            errors.append('relocation at cold+0x%X (%s) is outside the %d-byte image'
+                          % (offset, TYPE_NAMES.get(r_type, r_type), len(image)))
+
     if errors:
         for e in errors[:50]:
             print('wiiu_cold_split: error: ' + e, file=sys.stderr)
@@ -243,7 +391,6 @@ def main():
             print('wiiu_cold_split: ... %d more' % (len(errors) - 50), file=sys.stderr)
         return 1
 
-    image = bytes(data[cold.offset:cold.offset + cold.size]) if cold.type != SHT_NOBITS else bytes(cold.size)
     os.makedirs(os.path.dirname(os.path.abspath(args.image)), exist_ok=True)
     with open(args.image, 'wb') as out:
         out.write(MAGIC)

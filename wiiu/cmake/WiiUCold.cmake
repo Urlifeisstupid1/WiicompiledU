@@ -58,7 +58,9 @@ function(wiiu_add_cold_overlay target)
     target_include_directories(${target} PRIVATE "${WIIU_COLD_DIR}/../common")
     # Comes after wut.specs on the link line, so this *link spec replaces wut's.
     target_link_options(${target} PRIVATE "-specs=${specs}")
-    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${WIIU_COLD_DIR}/wiicold.ld")
+    # The split runs as a POST_BUILD step, so a change to the tool must relink.
+    set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS
+        "${WIIU_COLD_DIR}/wiicold.ld" "${WIIU_COLD_DIR}/../tools/wiiu_cold_split.py")
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND "${Python3_EXECUTABLE}" "${WIIU_COLD_DIR}/../tools/wiiu_cold_split.py"
                 --objcopy "${WIIU_OBJCOPY_EXE}"
