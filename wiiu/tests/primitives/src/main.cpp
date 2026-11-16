@@ -212,7 +212,10 @@ static void FiberEntry(void *argument)
     }
     state->accumulator = local + static_cast<double>(localInt);
     state->done = true;
-    HostContext::Switch(state->scheduler);
+    // Hand over along the chain (fiber 0 -> 1 -> 2 -> scheduler) so every fiber
+    // gets its final turn. (Round 1 on hardware jumped straight to the scheduler
+    // here, so fibers 1 and 2 never stored their results.)
+    HostContext::Switch(state->next);
     for (;;)  // never resumed; a fiber must not return
         HostContext::Switch(state->scheduler);
 }
