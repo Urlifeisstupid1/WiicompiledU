@@ -6,7 +6,10 @@
 #
 # Steps (the same translation upstream's Launcher/local-build.sh runs for the PC,
 # base game only), then the Wii U build of runtime/ (runtime/cmake/WiiU.cmake):
-#   1. check the tools and your extracted Assets/main.dol + Assets/StaticR.rel
+#   0. with --image: extract your disc image into Assets/DATA with nodtool, exactly
+#      like upstream's installer (same pinned nodtool, fetched by
+#      Launcher/WiiCompiled.Setup.Common.Cli), and copy main.dol + StaticR.rel out
+#   1. check the tools and your Assets/main.dol + Assets/StaticR.rel
 #   2. build the translator (.NET 8)
 #   3. translate-recursive, emit-base-manifest, generate-data-init, emit-build-shards
 #   4. cmake with the devkitPro Wii U toolchain -> build-wiiu/WiiCompiled.wuhb
@@ -21,18 +24,20 @@ workspace=$(cd "$script_dir/.." && pwd)
 build_dir="$workspace/build-wiiu"
 jobs=""
 skip_translation=0
+image=""
 
 usage() {
     cat <<'EOF'
-Usage: wiiu/build-game.sh [--jobs N] [--build-dir DIR] [--skip-translation]
+Usage: wiiu/build-game.sh --image PATH [--jobs N] [--build-dir DIR] [--skip-translation]
 
+  --image PATH         Your own Mario Kart Wii disc image (ISO, WBFS, RVZ, WIA, GCZ, CISO, ...).
+                       Extracted into Assets/DATA; reused on later runs with the same image.
   --jobs N             Parallel jobs for the translator and the compiler (default: all cores)
   --build-dir DIR      CMake build directory (default: build-wiiu in the repository)
   --skip-translation   Reuse generated/ from an earlier run and only rebuild the .wuhb
 
-Before the first run, put your own extracted files here:
-  Assets/main.dol      (from the disc's system data: sys/main.dol)
-  Assets/StaticR.rel   (from the disc's files: files/rel/StaticR.rel)
+Without --image, the script uses an earlier extraction: Assets/main.dol,
+Assets/StaticR.rel and Assets/DATA (the extracted disc with sys/ and files/).
 EOF
 }
 
@@ -41,6 +46,7 @@ while [[ $# -gt 0 ]]; do
         --jobs) jobs="$2"; shift 2 ;;
         --build-dir) build_dir="$2"; shift 2 ;;
         --skip-translation) skip_translation=1; shift ;;
+        --image) image="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "build-game.sh: unknown option $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -76,8 +82,38 @@ if (( ! skip_translation )); then
     # shellcheck source=../Launcher/build-cache.sh
     source "$workspace/Launcher/build-cache.sh"
     assets="$workspace/Assets"
+
+    if [[ -n "$image" ]]; then
+        [[ -f "$image" ]] || fail "Disc image not found: $image"
+        step "Extracting your disc image"
+        # Reuse an earlier extraction of the same file (path, size and modification time).
+        image_id="$(cd "$(dirname "$image")" && pwd)/$(basename "$image") $(wc -c < "$image" | tr -d ' ') $(date -r "$image" +%s 2>/dev/null || echo 0)"
+        marker="$assets/.wiiu-extracted-from"
+        if [[ -f "$marker" && "$(cat "$marker")" == "$image_id" && -f "$assets/DATA/sys/main.dol" &&
+              -f "$assets/main.dol" && -f "$assets/StaticR.rel" ]]; then
+            echo "Reusing the earlier extraction of this image in $assets/DATA"
+        else
+            echo "Fetching nodtool (the disc tool upstream's installer uses)..."
+            nodtool=$(dotnet run --project "$workspace/Launcher/WiiCompiled.Setup.Common.Cli" -c Release -- \
+                --workspace "$workspace" | tail -n1 | tr -d '\r')
+            if command -v cygpath >/dev/null 2>&1; then
+                nodtool=$(cygpath -u "$nodtool")  # MSYS2: dotnet prints a Windows path
+            fi
+            [[ -x "$nodtool" ]] || fail "Could not obtain nodtool ($nodtool)."
+            mkdir -p "$assets"
+            rm -f "$marker"
+            rm -rf "$assets/DATA"
+            echo "Extracting (several GB; takes a few minutes)..."
+            "$nodtool" extract "$image" "$assets/DATA" -q || fail "nodtool could not extract $image"
+            [[ -f "$assets/DATA/sys/main.dol" && -f "$assets/DATA/files/rel/StaticR.rel" ]] ||
+                fail "The image did not contain sys/main.dol and files/rel/StaticR.rel. Is it Mario Kart Wii?"
+            cp -f "$assets/DATA/sys/main.dol" "$assets/main.dol"
+            cp -f "$assets/DATA/files/rel/StaticR.rel" "$assets/StaticR.rel"
+            printf '%s' "$image_id" > "$marker"
+        fi
+    fi
     [[ -f "$assets/main.dol" && -f "$assets/StaticR.rel" ]] ||
-        fail "Put your own extracted main.dol and StaticR.rel in $assets (see --help)."
+        fail "No game files yet. Run with --image <your disc image> (see --help)."
 
     step "Checking your game files"
     project=$(mkw_resolve_project "$workspace" "$assets") ||
@@ -138,14 +174,18 @@ cmake --build "$build_dir" --target WiiCompiled_wuhb --parallel "$jobs"
 wuhb="$build_dir/WiiCompiled.wuhb"
 [[ -f "$wuhb" ]] || fail "The build finished but $wuhb is missing."
 
+data_hint="the extracted disc (the folder with sys/ and files/)"
+if [[ -d "$workspace/Assets/DATA/files" ]]; then
+    data_hint="$workspace/Assets/DATA  (copy this whole folder)"
+fi
 cat <<EOF
 
 Done: $wuhb
 
 Put on the Wii U's SD card:
-  SD:/wiiu/apps/WiiCompiled.wuhb                <- the file above
-  SD:/WiiCompiled/DATA/                          <- your extracted disc (the folder with sys/ and files/)
-  SD:/WiiCompiled/Config.toml                    <- optional; the defaults are fine for now
+  SD:/wiiu/apps/WiiCompiled.wuhb   <- $wuhb
+  SD:/WiiCompiled/DATA/            <- $data_hint
+  SD:/WiiCompiled/Config.toml      <- optional; the defaults are fine for now
 
 This .wuhb contains code translated from your game: keep it for your own console.
 EOF
